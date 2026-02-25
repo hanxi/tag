@@ -342,7 +342,7 @@ func decodeText(enc byte, b []byte) (string, error) {
 		return decodeUTF16(b, binary.BigEndian)
 
 	case encodingUTF8: // UTF-8
-		return string(b), nil
+		return fixEncoding(b), nil
 
 	default: // Fallback to ISO-8859-1
 		return decodeISO8859(b), nil
@@ -378,11 +378,7 @@ func dataSplit(b []byte, enc byte) [][]byte {
 }
 
 func decodeISO8859(b []byte) string {
-	r := make([]rune, len(b))
-	for i, x := range b {
-		r[i] = rune(x)
-	}
-	return string(r)
+	return fixEncoding(b)
 }
 
 func decodeUTF16WithBOM(b []byte) (string, error) {
