@@ -107,33 +107,89 @@ type metadataV1MP3 struct {
 }
 
 func getMP3Duration(header []byte, strippedSize int64) (time.Duration, error) {
+	// 检查 header 长度
+	if len(header) < 4 {
+		return 0, fmt.Errorf("header too short: need 4 bytes, got %d", len(header))
+	}
+
+	// 验证 MP3 帧同步字（前 11 bits 应全为 1）
+	if header[0] != 0xFF || (header[1]&0xE0) != 0xE0 {
+		return 0, fmt.Errorf("invalid mp3 frame sync word: got 0x%02X%02X", header[0], header[1])
+	}
+
 	version, err := cutBits(header, 11, 2)
 	if err != nil {
 		return 0, fmt.Errorf("reading mpeg version: %w", err)
 	}
+	// version == 1 是 reserved
+	if mpegVersion(version) == mpegReserved {
+		return 0, fmt.Errorf("invalid mpeg version: reserved value 1")
+	}
+	if version >= uint64(mpegMax) {
+		return 0, fmt.Errorf("invalid mpeg version index: %d", version)
+	}
+
 	layer, err := cutBits(header, 13, 2)
 	if err != nil {
 		return 0, fmt.Errorf("reading mpeg layer: %w", err)
 	}
+	// layer == 0 是 reserved
+	if mpegLayer(layer) == layerReserved {
+		return 0, fmt.Errorf("invalid mpeg layer: reserved value 0")
+	}
+	if layer >= uint64(layerMax) {
+		return 0, fmt.Errorf("invalid mpeg layer index: %d", layer)
+	}
+
 	protection, err := cutBits(header, 15, 1)
 	if err != nil {
 		return 0, fmt.Errorf("reading mpeg protection: %w", err)
 	}
+
 	bitrateIndex, err := cutBits(header, 16, 4)
 	if err != nil {
 		return 0, fmt.Errorf("reading mpeg bitrate index: %w", err)
 	}
+	// bitrateIndex == 0 (free) 或 15 (bad) 应返回错误
+	if bitrateIndex == 0 {
+		return 0, fmt.Errorf("invalid bitrate index: free bitrate not supported")
+	}
+	if bitrateIndex == 15 {
+		return 0, fmt.Errorf("invalid bitrate index: bad value 15")
+	}
+
 	samplerateIndex, err := cutBits(header, 20, 2)
 	if err != nil {
 		return 0, fmt.Errorf("reading mpeg samplerate index: %w", err)
 	}
+	// samplerateIndex == 3 是 reserved
+	if samplerateIndex == 3 {
+		return 0, fmt.Errorf("invalid samplerate index: reserved value 3")
+	}
+
 	padding, err := cutBits(header, 21, 1)
 	if err != nil {
 		return 0, fmt.Errorf("reading mpeg padding bit: %w", err)
 	}
+
+	// 访问查找表前验证索引范围
+	sampleRate := sampleRates[version][samplerateIndex]
+	if sampleRate == 0 {
+		return 0, fmt.Errorf("invalid sample rate: got 0 for version=%d samplerate_index=%d", version, samplerateIndex)
+	}
+
+	bitrate := bitrates[version][layer][bitrateIndex]
+	if bitrate == 0 {
+		return 0, fmt.Errorf("invalid bitrate: got 0 for version=%d layer=%d bitrate_index=%d", version, layer, bitrateIndex)
+	}
+
 	frameSampleNum := samplesPerFrame[version][layer]
-	frameDuration := float64(frameSampleNum) / float64(sampleRates[version][samplerateIndex])
-	frameSize := math.Floor(((frameDuration * float64(bitrates[version][layer][bitrateIndex])) * 1000) / 8)
+	if frameSampleNum == 0 {
+		return 0, fmt.Errorf("invalid samples per frame: got 0 for version=%d layer=%d", version, layer)
+	}
+
+	frameDuration := float64(frameSampleNum) / float64(sampleRate)
+	frameSize := math.Floor(((frameDuration * float64(bitrate)) * 1000) / 8)
 	if padding == 1 {
 		frameSize += float64(slotSize[layer])
 	}
@@ -142,6 +198,12 @@ func getMP3Duration(header []byte, strippedSize int64) (time.Duration, error) {
 	}
 	// add the header length
 	frameSize += 4
+
+	// 防止除以零
+	if frameSize == 0 {
+		return 0, fmt.Errorf("invalid frame size: calculated as 0")
+	}
+
 	duration := time.Second * time.Duration(math.Round((float64(strippedSize)/float64(frameSize))*frameDuration))
 
 	return duration, nil
@@ -167,6 +229,11 @@ func ReadV2MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 	_, err = io.ReadFull(r, header)
 	if err != nil {
 		return nil, fmt.Errorf("reading first frame header: %w", err)
+	}
+
+	// 验证 MP3 帧同步字（前 11 bits 应全为 1）
+	if header[0] != 0xFF || (header[1]&0xE0) != 0xE0 {
+		return nil, fmt.Errorf("invalid mp3 frame sync word at offset %d", id3Size)
 	}
 
 	duration, err := getMP3Duration(header, size-int64(id3Size))

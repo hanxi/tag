@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 )
 
@@ -121,7 +122,11 @@ func cutBits(in []byte, offset, n uint) (uint64, error) {
 	var bitsRead uint
 	if splitStart := offset % 8; splitStart > 0 {
 		remaining := 8 - splitStart
-		splitByte := uint64(in[int(offset/8)]) & ((1 << remaining) - 1)
+		byteIdx := int(offset / 8)
+		if byteIdx >= len(in) {
+			return 0, fmt.Errorf("split byte access out of bounds: index=%d len=%d", byteIdx, len(in))
+		}
+		splitByte := uint64(in[byteIdx]) & ((1 << remaining) - 1)
 		if n <= remaining {
 			return uint64(splitByte) >> uint64(remaining-n), nil
 		}
@@ -131,6 +136,12 @@ func cutBits(in []byte, offset, n uint) (uint64, error) {
 
 	wholeBytes := int((n - bitsRead) / 8)
 	start := int((offset + bitsRead) / 8)
+
+	// 在循环前验证所有字节访问都在范围内
+	if start+wholeBytes > len(in) {
+		return 0, fmt.Errorf("loop will exceed bounds: start=%d wholeBytes=%d len=%d", start, wholeBytes, len(in))
+	}
+
 	for i := range wholeBytes {
 		res <<= 8
 		res |= uint64(in[start+i])
@@ -138,6 +149,10 @@ func cutBits(in []byte, offset, n uint) (uint64, error) {
 	}
 
 	if remaining := n - bitsRead; remaining > 0 {
+		// 处理剩余 bits 前检查索引
+		if start+wholeBytes >= len(in) {
+			return 0, fmt.Errorf("remaining bits access out of bounds: index=%d len=%d", start+wholeBytes, len(in))
+		}
 		res <<= remaining
 		res |= uint64(in[start+wholeBytes]) >> (8 - remaining)
 	}
