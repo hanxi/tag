@@ -231,6 +231,16 @@ func ReadV2MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 		return nil, fmt.Errorf("reading first frame header: %w", err)
 	}
 
+	// FLAC 文件可以在 fLaC 头之前包含 ID3v2 标签，
+	// 跳过 ID3v2 后如果遇到 fLaC 魔数，则转交给 FLAC 解析器处理。
+	if string(header) == "fLaC" {
+		_, err = r.Seek(int64(id3Size), io.SeekStart)
+		if err != nil {
+			return nil, fmt.Errorf("seeking back for FLAC parsing: %w", err)
+		}
+		return ReadFLACMeta(r)
+	}
+
 	// 验证 MP3 帧同步字（前 11 bits 应全为 1）
 	if header[0] != 0xFF || (header[1]&0xE0) != 0xE0 {
 		return nil, fmt.Errorf("invalid mp3 frame sync word at offset %d", id3Size)
