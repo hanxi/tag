@@ -1,6 +1,8 @@
 package tag
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"math"
@@ -209,6 +211,83 @@ func getMP3Duration(header []byte, strippedSize int64) (time.Duration, error) {
 	return duration, nil
 }
 
+// parseVBRHeader 尝试解析 Xing/LAME VBR 头，如果找到则返回总帧数和总字节数
+func parseVBRHeader(r io.ReadSeeker, headerOffset int64, mpegVersion mpegVersion, mpegLayer mpegLayer, protection uint64) (totalFrames uint32, totalBytes uint32, hasVBR bool, err error) {
+	// 计算 VBR 头的偏移位置
+	// Xing 头在帧同步字和边信息之后
+	offset := headerOffset + 4 // 跳过 4 字节帧头
+
+	// 跳过边信息 (Side Information)
+	// MPEG1: 17 bytes (mono) or 32 bytes (stereo)
+	// MPEG2/2.5: 9 bytes (mono) or 17 bytes (stereo)
+	// 这里我们简单处理，读取更多数据来查找 Xing/Lame 标记
+	skipBytes := int64(0)
+	if mpegVersion == mpeg1 {
+		skipBytes = 32 // 假设 stereo
+	} else {
+		skipBytes = 17 // 假设 stereo
+	}
+	offset += skipBytes
+
+	// 如果有 CRC，跳过 2 字节
+	if protection == 0 {
+		offset += 2
+	}
+
+	// 读取 Xing/Lame 标记（在帧头后的固定位置）
+	// Xing 头通常在偏移 4+(skipBytes) 或 4+(skipBytes)+2(CRC) 的位置
+	// 我们读取 4 字节来检查是否有 "Xing" 或 "Info" 标记
+	_, err = r.Seek(offset, io.SeekStart)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("seeking to VBR header: %w", err)
+	}
+
+	marker := make([]byte, 4)
+	_, err = io.ReadFull(r, marker)
+	if err != nil {
+		// 读取失败，可能没有 VBR 头
+		return 0, 0, false, nil
+	}
+
+	// 检查是否是 Xing 或 Info 标记
+	if !bytes.Equal(marker, []byte("Xing")) && !bytes.Equal(marker, []byte("Info")) {
+		return 0, 0, false, nil
+	}
+
+	// 读取 flags（4 字节）
+	flagsBytes := make([]byte, 4)
+	_, err = io.ReadFull(r, flagsBytes)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("reading VBR flags: %w", err)
+	}
+	flags := binary.BigEndian.Uint32(flagsBytes)
+
+	// Flag 0 (bit 0) = Frames 字段存在
+	// Flag 1 (bit 1) = Bytes 字段存在
+	hasFrames := (flags & 0x0001) != 0
+	hasBytes := (flags & 0x0002) != 0
+
+	if hasFrames {
+		framesBytes := make([]byte, 4)
+		_, err = io.ReadFull(r, framesBytes)
+		if err != nil {
+			return 0, 0, false, fmt.Errorf("reading VBR frames count: %w", err)
+		}
+		totalFrames = binary.BigEndian.Uint32(framesBytes)
+	}
+
+	if hasBytes {
+		bytesField := make([]byte, 4)
+		_, err = io.ReadFull(r, bytesField)
+		if err != nil {
+			return 0, 0, false, fmt.Errorf("reading VBR bytes count: %w", err)
+		}
+		totalBytes = binary.BigEndian.Uint32(bytesField)
+	}
+
+	return totalFrames, totalBytes, true, nil
+}
+
 func ReadV2MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 	tagMeta, err := ReadID3v2Tags(r)
 	if err != nil {
@@ -246,9 +325,34 @@ func ReadV2MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 		return nil, fmt.Errorf("invalid mp3 frame sync word at offset %d", id3Size)
 	}
 
-	duration, err := getMP3Duration(header, size-int64(id3Size))
+	// 解析 MP3 帧头信息
+	version, _ := cutBits(header, 11, 2)
+	layer, _ := cutBits(header, 13, 2)
+	protection, _ := cutBits(header, 15, 1)
+	samplerateIndex, _ := cutBits(header, 20, 2)
+
+	sampleRate := sampleRates[version][samplerateIndex]
+	frameSampleNum := samplesPerFrame[version][layer]
+
+	// 尝试解析 VBR 头
+	vbrOffset := int64(id3Size)
+	totalFrames, _, hasVBR, err := parseVBRHeader(r, vbrOffset, mpegVersion(version), mpegLayer(layer), protection)
 	if err != nil {
-		return nil, fmt.Errorf("reading the mp3 duration: %w", err)
+		// VBR 头解析失败，回退到 CBR 计算
+		fmt.Printf("Warning: failed to parse VBR header: %v, falling back to CBR calculation\n", err)
+	}
+
+	var duration time.Duration
+	if hasVBR && totalFrames > 0 && sampleRate > 0 && frameSampleNum > 0 {
+		// 使用 VBR 信息计算时长
+		frameDuration := float64(frameSampleNum) / float64(sampleRate)
+		duration = time.Second * time.Duration(math.Round(float64(totalFrames)*frameDuration))
+	} else {
+		// 使用 CBR 计算方法
+		duration, err = getMP3Duration(header, size-int64(id3Size))
+		if err != nil {
+			return nil, fmt.Errorf("reading the mp3 duration: %w", err)
+		}
 	}
 
 	return &metadataV2MP3{
@@ -261,7 +365,7 @@ func ReadV2MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 func ReadV1MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 	tagMeta, err := ReadID3v1Tags(r)
 	if err != nil {
-		return nil, fmt.Errorf("reading id3v2 tags: %w", err)
+		return nil, fmt.Errorf("reading id3v1 tags: %w", err)
 	}
 
 	_, err = r.Seek(0, io.SeekStart)
@@ -276,9 +380,34 @@ func ReadV1MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 		return nil, fmt.Errorf("reading first frame header: %w", err)
 	}
 
-	duration, err := getMP3Duration(header, size-128)
+	// 解析 MP3 帧头信息
+	version, _ := cutBits(header, 11, 2)
+	layer, _ := cutBits(header, 13, 2)
+	protection, _ := cutBits(header, 15, 1)
+	samplerateIndex, _ := cutBits(header, 20, 2)
+
+	sampleRate := sampleRates[version][samplerateIndex]
+	frameSampleNum := samplesPerFrame[version][layer]
+
+	// 尝试解析 VBR 头
+	vbrOffset := int64(0)
+	totalFrames, _, hasVBR, err := parseVBRHeader(r, vbrOffset, mpegVersion(version), mpegLayer(layer), protection)
 	if err != nil {
-		return nil, fmt.Errorf("reading the mp3 duration: %w", err)
+		// VBR 头解析失败，回退到 CBR 计算
+		fmt.Printf("Warning: failed to parse VBR header: %v, falling back to CBR calculation\n", err)
+	}
+
+	var duration time.Duration
+	if hasVBR && totalFrames > 0 && sampleRate > 0 && frameSampleNum > 0 {
+		// 使用 VBR 信息计算时长
+		frameDuration := float64(frameSampleNum) / float64(sampleRate)
+		duration = time.Second * time.Duration(math.Round(float64(totalFrames)*frameDuration))
+	} else {
+		// 使用 CBR 计算方法
+		duration, err = getMP3Duration(header, size-128)
+		if err != nil {
+			return nil, fmt.Errorf("reading the mp3 duration: %w", err)
+		}
 	}
 
 	return &metadataV1MP3{
