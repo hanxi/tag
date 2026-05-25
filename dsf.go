@@ -32,7 +32,15 @@ func ReadDSFMeta(r io.ReadSeeker) (Metadata, error) {
 		return nil, err
 	}
 
-	_, err = r.Seek(int64(28), io.SeekCurrent)
+	// fmt chunk(DSD chunk 之后从 offset 28 起):
+	//   "fmt "(4) + chunk_size(8) + version(4) + format_id(4) + channel_type(4)
+	//   + channel_num(4) + sampling_freq(4) + bits_per_sample(4) + sample_count(8) + ...
+	// 已读到 pos=28,skip "fmt "(4) + chunk_size(8) + version(4) + format_id(4) + channel_type(4) = 24 字节到 channel_num
+	_, err = r.Seek(int64(24), io.SeekCurrent)
+	if err != nil {
+		return nil, err
+	}
+	channels, err := readUint32LittleEndian(r)
 	if err != nil {
 		return nil, err
 	}
@@ -42,7 +50,7 @@ func ReadDSFMeta(r io.ReadSeeker) (Metadata, error) {
 		return nil, err
 	}
 
-	_, err = r.Seek(int64(4), io.SeekCurrent)
+	bitsPerSample, err := readUint32LittleEndian(r)
 	if err != nil {
 		return nil, err
 	}
@@ -67,12 +75,18 @@ func ReadDSFMeta(r io.ReadSeeker) (Metadata, error) {
 	return metadataDSF{
 		metadataID3v2: id3,
 		duration:      duration,
+		sampleRate:    int(sampleRate),
+		channels:      int(channels),
+		bitsPerSample: int(bitsPerSample),
 	}, nil
 }
 
 type metadataDSF struct {
 	*metadataID3v2
-	duration time.Duration
+	duration      time.Duration
+	sampleRate    int
+	channels      int
+	bitsPerSample int
 }
 
 func (m metadataDSF) FileType() FileType {
@@ -81,4 +95,16 @@ func (m metadataDSF) FileType() FileType {
 
 func (m metadataDSF) Duration() time.Duration {
 	return m.duration
+}
+
+func (m metadataDSF) SampleRate() int {
+	return m.sampleRate
+}
+
+// BitRate 返回 DSD 流的原始比特率(kbps)= sampleRate * channels * bitsPerSample / 1000。
+func (m metadataDSF) BitRate() int {
+	if m.sampleRate == 0 || m.channels == 0 || m.bitsPerSample == 0 {
+		return 0
+	}
+	return m.sampleRate * m.channels * m.bitsPerSample / 1000
 }

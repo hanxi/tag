@@ -55,7 +55,10 @@ func ReadFLACMeta(r io.ReadSeeker) (Metadata, error) {
 
 type metadataFLAC struct {
 	*metadataVorbis
-	duration time.Duration
+	duration      time.Duration
+	sampleRate    int // Hz
+	channels      int
+	bitsPerSample int
 }
 
 func (m *metadataFLAC) readFLACBlock(r io.ReadSeeker) (last bool, err error) {
@@ -100,12 +103,24 @@ func (m *metadataFLAC) readStreamingInfoBlock(r io.Reader, len int) error {
 	if err != nil {
 		return fmt.Errorf("reading sample rate: %w", err)
 	}
+	// streaminfo: sample_rate(20) + channels(3, value+1) + bits_per_sample(5, value+1) + sample_num(36)
+	channelsRaw, err := cutBits(data, 100, 3)
+	if err != nil {
+		return fmt.Errorf("reading channels: %w", err)
+	}
+	bitsRaw, err := cutBits(data, 103, 5)
+	if err != nil {
+		return fmt.Errorf("reading bits per sample: %w", err)
+	}
 
 	sampleNum, err := cutBits(data, 108, 36)
 	if err != nil {
 		return fmt.Errorf("reading sample number: %w", err)
 	}
 
+	m.sampleRate = int(sampleRate)
+	m.channels = int(channelsRaw) + 1
+	m.bitsPerSample = int(bitsRaw) + 1
 	m.duration = time.Second * (time.Duration(sampleNum) / time.Duration(sampleRate))
 
 	return nil
@@ -117,4 +132,15 @@ func (m *metadataFLAC) FileType() FileType {
 
 func (m *metadataFLAC) Duration() time.Duration {
 	return m.duration
+}
+
+func (m *metadataFLAC) SampleRate() int {
+	return m.sampleRate
+}
+
+// BitRate 返回 FLAC 的平均 bitrate(kbps)。streaminfo 不直接给 bitrate,
+// 这里返回 0,让上层(ProbeForValidation)回退到 ffprobe 用 file_size/duration 算实测平均值。
+// 用 sampleRate*bitsPerSample*channels 得到的是未压缩 PCM 比特率(典型 1411 kbps),不能表示 FLAC 压缩后的实际比特率。
+func (m *metadataFLAC) BitRate() int {
+	return 0
 }

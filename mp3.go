@@ -100,12 +100,16 @@ var (
 
 type metadataV2MP3 struct {
 	*metadataID3v2
-	duration time.Duration
+	duration   time.Duration
+	bitRate    int // kbps
+	sampleRate int // Hz
 }
 
 type metadataV1MP3 struct {
 	*metadataID3v1
-	duration time.Duration
+	duration   time.Duration
+	bitRate    int // kbps
+	sampleRate int // Hz
 }
 
 func getMP3Duration(header []byte, strippedSize int64) (time.Duration, error) {
@@ -329,14 +333,19 @@ func ReadV2MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 	version, _ := cutBits(header, 11, 2)
 	layer, _ := cutBits(header, 13, 2)
 	protection, _ := cutBits(header, 15, 1)
+	bitrateIndex, _ := cutBits(header, 16, 4)
 	samplerateIndex, _ := cutBits(header, 20, 2)
 
 	sampleRate := sampleRates[version][samplerateIndex]
 	frameSampleNum := samplesPerFrame[version][layer]
+	var frameBitRate int
+	if int(version) < int(mpegMax) && int(layer) < int(layerMax) && bitrateIndex < 15 {
+		frameBitRate = bitrates[version][layer][bitrateIndex]
+	}
 
 	// 尝试解析 VBR 头
 	vbrOffset := int64(id3Size)
-	totalFrames, _, hasVBR, err := parseVBRHeader(r, vbrOffset, mpegVersion(version), mpegLayer(layer), protection)
+	totalFrames, totalBytes, hasVBR, err := parseVBRHeader(r, vbrOffset, mpegVersion(version), mpegLayer(layer), protection)
 	if err != nil {
 		// VBR 头解析失败，回退到 CBR 计算
 		fmt.Printf("Warning: failed to parse VBR header: %v, falling back to CBR calculation\n", err)
@@ -355,9 +364,18 @@ func ReadV2MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 		}
 	}
 
+	// VBR 文件下,用 totalBytes*8 / duration 算实测平均 bitrate;
+	// 算不出来或 CBR 文件,退回首帧 nominal bitrate(可能不准但聊胜于无)。
+	bitRate := frameBitRate
+	if hasVBR && totalBytes > 0 && duration > 0 {
+		bitRate = int(math.Round(float64(totalBytes) * 8 / duration.Seconds() / 1000))
+	}
+
 	return &metadataV2MP3{
 		metadataID3v2: tagMeta,
 		duration:      duration,
+		bitRate:       bitRate,
+		sampleRate:    sampleRate,
 	}, nil
 
 }
@@ -384,14 +402,19 @@ func ReadV1MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 	version, _ := cutBits(header, 11, 2)
 	layer, _ := cutBits(header, 13, 2)
 	protection, _ := cutBits(header, 15, 1)
+	bitrateIndex, _ := cutBits(header, 16, 4)
 	samplerateIndex, _ := cutBits(header, 20, 2)
 
 	sampleRate := sampleRates[version][samplerateIndex]
 	frameSampleNum := samplesPerFrame[version][layer]
+	var frameBitRate int
+	if int(version) < int(mpegMax) && int(layer) < int(layerMax) && bitrateIndex < 15 {
+		frameBitRate = bitrates[version][layer][bitrateIndex]
+	}
 
 	// 尝试解析 VBR 头
 	vbrOffset := int64(0)
-	totalFrames, _, hasVBR, err := parseVBRHeader(r, vbrOffset, mpegVersion(version), mpegLayer(layer), protection)
+	totalFrames, totalBytes, hasVBR, err := parseVBRHeader(r, vbrOffset, mpegVersion(version), mpegLayer(layer), protection)
 	if err != nil {
 		// VBR 头解析失败，回退到 CBR 计算
 		fmt.Printf("Warning: failed to parse VBR header: %v, falling back to CBR calculation\n", err)
@@ -410,9 +433,16 @@ func ReadV1MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 		}
 	}
 
+	bitRate := frameBitRate
+	if hasVBR && totalBytes > 0 && duration > 0 {
+		bitRate = int(math.Round(float64(totalBytes) * 8 / duration.Seconds() / 1000))
+	}
+
 	return &metadataV1MP3{
 		metadataID3v1: &tagMeta,
 		duration:      duration,
+		bitRate:       bitRate,
+		sampleRate:    sampleRate,
 	}, nil
 
 }
@@ -421,6 +451,22 @@ func (m *metadataV2MP3) Duration() time.Duration {
 	return m.duration
 }
 
+func (m *metadataV2MP3) BitRate() int {
+	return m.bitRate
+}
+
+func (m *metadataV2MP3) SampleRate() int {
+	return m.sampleRate
+}
+
 func (m *metadataV1MP3) Duration() time.Duration {
 	return m.duration
+}
+
+func (m *metadataV1MP3) BitRate() int {
+	return m.bitRate
+}
+
+func (m *metadataV1MP3) SampleRate() int {
+	return m.sampleRate
 }

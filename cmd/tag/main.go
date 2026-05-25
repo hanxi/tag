@@ -96,4 +96,8 @@ func printMetadata(m tag.Metadata) {
 	fmt.Printf(" Picture: %v\n", m.Picture())
 	fmt.Printf(" Lyrics: %v\n", m.Lyrics())
 	fmt.Printf(" Comment: %v\n", m.Comment())
+
+	fmt.Printf(" Duration: %v\n", m.Duration())
+	fmt.Printf(" SampleRate: %v Hz\n", m.SampleRate())
+	fmt.Printf(" BitRate: %v kbps\n", m.BitRate())
 }

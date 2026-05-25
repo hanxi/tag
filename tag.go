@@ -176,4 +176,11 @@ type Metadata interface {
 	Raw() map[string]interface{}
 
 	Duration() time.Duration
+
+	// BitRate returns the average bitrate in kbps, or 0 if not available
+	// from the container (e.g. ID3v1, generic MP4 without stsd parsing).
+	BitRate() int
+
+	// SampleRate returns the audio sampling rate in Hz, or 0 if not available.
+	SampleRate() int
 }

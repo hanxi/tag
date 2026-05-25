@@ -216,6 +216,18 @@ func (m *metadataWAV) Duration() time.Duration {
 	return m.duration
 }
 
+func (m *metadataWAV) SampleRate() int {
+	return int(m.sampleRate)
+}
+
+// BitRate 返回 PCM WAV 的恒定 bitrate(kbps)。
+func (m *metadataWAV) BitRate() int {
+	if m.sampleRate == 0 || m.bitsPerSample == 0 || m.channels == 0 {
+		return 0
+	}
+	return int(m.sampleRate) * int(m.bitsPerSample) * int(m.channels) / 1000
+}
+
 func setWavOffset(r io.ReadSeeker) error {
 	// verify RIFF chunk
 	str, err := readString(r, 4)

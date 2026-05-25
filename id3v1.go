@@ -146,3 +146,7 @@ func (m metadataID3v1) Comment() string     { return m["comment"].(string) }
 func (m metadataID3v1) Duration() time.Duration {
 	return time.Second
 }
+
+// ID3v1 标签不包含音频技术指标,wrapper(metadataV1MP3)会覆写这两个方法。
+func (metadataID3v1) BitRate() int    { return 0 }
+func (metadataID3v1) SampleRate() int { return 0 }

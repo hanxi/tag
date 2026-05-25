@@ -150,3 +150,8 @@ func (m metadataID3v2) Picture() *Picture {
 	}
 	return v.(*Picture)
 }
+
+// ID3v2 仅包含文本/图片标签,音频技术指标由 wrapper(metadataV2MP3 / metadataDSF)覆写。
+func (m metadataID3v2) Duration() time.Duration { return 0 }
+func (m metadataID3v2) BitRate() int            { return 0 }
+func (m metadataID3v2) SampleRate() int         { return 0 }

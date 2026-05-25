@@ -184,8 +184,9 @@ func ReadOGGMeta(r io.Reader) (Metadata, error) {
 
 type metadataOGG struct {
 	*metadataVorbis
-	sampleRate uint32
-	duration   time.Duration
+	sampleRate     uint32
+	bitRateNominal int32 // bps;来自 vorbis identification 头,可能 0(未填) 或负值(不支持)
+	duration       time.Duration
 }
 
 func (m *metadataOGG) FileType() FileType {
@@ -196,7 +197,23 @@ func (m *metadataOGG) Duration() time.Duration {
 	return m.duration
 }
 
+func (m *metadataOGG) SampleRate() int {
+	return int(m.sampleRate)
+}
+
+// BitRate 返回 vorbis identification 头中的 nominal bitrate(kbps);
+// 未填或非正值时返回 0,让上层(ProbeForValidation)回退到 ffprobe。
+func (m *metadataOGG) BitRate() int {
+	if m.bitRateNominal <= 0 {
+		return 0
+	}
+	return int(m.bitRateNominal) / 1000
+}
+
 func (m *metadataOGG) readVorbisIdentification(r io.ReadSeeker) error {
+	// vorbis_id 结构(去掉 7 字节前缀 \x01vorbis 后):
+	//   vorbis_version(4) + audio_channels(1) + audio_sample_rate(4) +
+	//   bitrate_maximum(4) + bitrate_nominal(4) + bitrate_minimum(4) + ...
 	_, err := r.Seek(5, io.SeekCurrent)
 	if err != nil {
 		return err
@@ -205,5 +222,15 @@ func (m *metadataOGG) readVorbisIdentification(r io.ReadSeeker) error {
 	if err != nil {
 		return err
 	}
+	// 跳过 bitrate_maximum
+	if _, err = r.Seek(4, io.SeekCurrent); err != nil {
+		return err
+	}
+	nominal, err := readUint32LittleEndian(r)
+	if err != nil {
+		// 容忍读取失败:bitrate 拿不到不影响主流程
+		return nil
+	}
+	m.bitRateNominal = int32(nominal)
 	return nil
 }

@@ -403,3 +403,8 @@ func (m metadataMP4) Picture() *Picture {
 func (m metadataMP4) Duration() time.Duration {
 	return m.duration
 }
+
+// BitRate / SampleRate 暂未从 stsd/mp4a box 解析,返回 0 由 ffprobe 兜底。
+// 注意:mvhd 的 timescale 不是音频采样率,不能直接用作 SampleRate。
+func (m metadataMP4) BitRate() int    { return 0 }
+func (m metadataMP4) SampleRate() int { return 0 }
