@@ -1,8 +1,10 @@
-# MP3/MP4/OGG/FLAC metadata parsing library
+# MP3/MP4/OGG/FLAC metadata library (read + write)
 
 [![GoDoc](https://pkg.go.dev/badge/github.com/zeozeozeo/tag)](https://pkg.go.dev/github.com/zeozeozeo/tag)
 
-This package provides MP3 (ID3v1,2.{2,3,4}) and MP4 (ACC, M4A, ALAC), OGG and FLAC metadata detection, parsing and artwork extraction.
+This package provides MP3 (ID3v1,2.{2,3,4}) and MP4 (ACC, M4A, ALAC), OGG and FLAC metadata detection, parsing and artwork extraction. It also supports **writing** tags back to MP3 (ID3v2.3) and FLAC (Vorbis Comment + Picture block); M4A/OGG writers are TODO and return `ErrUnsupportedWrite` for now.
+
+## Reading
 
 Detect and parse tag metadata from an `io.ReadSeeker` (i.e. an `*os.File`):
 
@@ -14,6 +16,37 @@ if err != nil {
 log.Print(m.Format()) // The detected format.
 log.Print(m.Title())  // The title of the track (see Metadata interface for more details).
 ```
+
+## Writing
+
+Write tags to an existing audio file (atomic rewrite via a sibling temp file):
+
+```go
+err := tag.WriteTag("song.mp3", tag.WriteOptions{
+    Title:       "晴天",
+    Artist:      "周杰伦",
+    AlbumArtist: "周杰伦",
+    Album:       "叶惠美",
+    Year:        2003,
+    Genre:       "Pop",
+    Lyrics:      "[00:00.00]...",        // UTF-8
+    Picture: &tag.Picture{
+        MIMEType: "image/jpeg",
+        Data:     coverBytes,
+    },
+})
+```
+
+Format dispatch is by file extension:
+
+| Extension | Status | Frames / blocks written |
+|-----------|--------|--------------------------|
+| `.mp3` | ✅ ID3v2.3 | TIT2 / TPE1 / TPE2 / TALB / TYER / TCON / USLT / APIC |
+| `.flac` | ✅ Vorbis Comment + PICTURE | TITLE / ARTIST / ALBUMARTIST / ALBUM / DATE / GENRE / LYRICS + Picture(Front) |
+| `.m4a` / `.mp4` / `.m4b` | ⚠️ TODO | Returns `ErrUnsupportedWrite` |
+| `.ogg` / `.oga` | ⚠️ TODO | Returns `ErrUnsupportedWrite` |
+
+Other extensions return `ErrUnsupportedWrite`. Callers should treat tag-write failures as non-fatal (log + continue).
 
 Parsed metadata is exported via a single interface (giving a consistent API for all supported metadata formats).
 
