@@ -111,7 +111,7 @@ func WriteFLAC(filePath string, opts WriteOptions) error {
 
 	// 准备临时文件
 	dir := filepath.Dir(filePath)
-	tmp, err := os.CreateTemp(dir, ".mimusic-tag-*.tmp")
+	tmp, err := os.CreateTemp(dir, ".songloft-tag-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}
@@ -179,7 +179,7 @@ func WriteFLAC(filePath string, opts WriteOptions) error {
 // 与 RFC 推荐字段名保持一致(全大写)。
 func buildFLACVorbisComment(opts WriteOptions) []byte {
 	var buf bytes.Buffer
-	vendor := "mimusic"
+	vendor := "songloft"
 	var lenBuf [4]byte
 	binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(vendor)))
 	buf.Write(lenBuf[:])
