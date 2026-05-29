@@ -4,7 +4,7 @@
 
 This package provides MP3 (ID3v1,2.{2,3,4}) and MP4 (ACC, M4A, ALAC), OGG and FLAC metadata detection, parsing and artwork extraction. It also supports **writing** tags back to MP3 (ID3v2.3) and FLAC (Vorbis Comment + Picture block); M4A/OGG writers are TODO and return `ErrUnsupportedWrite` for now.
 
-> Forked from upstream and extended with encoding detection improvements plus MP3 (ID3v2.3) / FLAC (Vorbis Comment + PICTURE) writers used by MiMusic.
+> Forked from upstream and extended with encoding detection improvements plus MP3 (ID3v2.3) / FLAC (Vorbis Comment + PICTURE) writers used by Songloft.
 
 ## Reading
 
