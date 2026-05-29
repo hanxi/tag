@@ -1,4 +1,4 @@
-// Copyright 2026 mimusic contributors.
+// Copyright 2026 songloft contributors.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
@@ -47,7 +47,7 @@ func WriteID3v2(filePath string, opts WriteOptions) error {
 
 	// 写入临时文件后 rename,保证原子替换
 	dir := filepath.Dir(filePath)
-	tmp, err := os.CreateTemp(dir, ".mimusic-tag-*.tmp")
+	tmp, err := os.CreateTemp(dir, ".songloft-tag-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}
