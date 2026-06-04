@@ -55,17 +55,17 @@ func ReadID3v1Tags(r io.ReadSeeker) (metadataID3v1, error) {
 		return nil, ErrNotID3v1
 	}
 
-	title, err := readString(r, 30)
+	titleBytes, err := readBytes(r, 30)
 	if err != nil {
 		return nil, err
 	}
 
-	artist, err := readString(r, 30)
+	artistBytes, err := readBytes(r, 30)
 	if err != nil {
 		return nil, err
 	}
 
-	album, err := readString(r, 30)
+	albumBytes, err := readBytes(r, 30)
 	if err != nil {
 		return nil, err
 	}
@@ -80,13 +80,13 @@ func ReadID3v1Tags(r io.ReadSeeker) (metadataID3v1, error) {
 		return nil, err
 	}
 
-	var comment string
+	var commentRaw []byte
 	var track int
 	if commentBytes[28] == 0 {
-		comment = trimString(string(commentBytes[:28]))
+		commentRaw = commentBytes[:28]
 		track = int(commentBytes[29])
 	} else {
-		comment = trimString(string(commentBytes))
+		commentRaw = commentBytes
 	}
 
 	var genre string
@@ -99,11 +99,11 @@ func ReadID3v1Tags(r io.ReadSeeker) (metadataID3v1, error) {
 	}
 
 	m := make(map[string]interface{})
-	m["title"] = trimString(title)
-	m["artist"] = trimString(artist)
-	m["album"] = trimString(album)
+	m["title"] = fixID3v1Encoding(titleBytes)
+	m["artist"] = fixID3v1Encoding(artistBytes)
+	m["album"] = fixID3v1Encoding(albumBytes)
 	m["year"] = trimString(year)
-	m["comment"] = trimString(comment)
+	m["comment"] = fixID3v1Encoding(commentRaw)
 	m["track"] = track
 	m["genre"] = genre
 
@@ -112,6 +112,19 @@ func ReadID3v1Tags(r io.ReadSeeker) (metadataID3v1, error) {
 
 func trimString(x string) string {
 	return strings.TrimSpace(strings.Trim(x, "\x00"))
+}
+
+func fixID3v1Encoding(b []byte) string {
+	// ID3v1 字段末尾用 \x00 填充，先去掉
+	end := len(b)
+	for end > 0 && b[end-1] == 0 {
+		end--
+	}
+	b = b[:end]
+	if len(b) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(fixEncoding(b))
 }
 
 // metadataID3v1 is the implementation of Metadata used for ID3v1 tags.
