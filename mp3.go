@@ -292,6 +292,8 @@ func parseVBRHeader(r io.ReadSeeker, headerOffset int64, mpegVersion mpegVersion
 	return totalFrames, totalBytes, true, nil
 }
 
+const maxPaddingScan = 64 * 1024
+
 func ReadV2MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 	tagMeta, err := ReadID3v2Tags(r)
 	if err != nil {
@@ -305,28 +307,21 @@ func ReadV2MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 	_, err = r.Seek(int64(id3Size), io.SeekStart)
 	if err != nil {
 		return nil, fmt.Errorf("seeking to skip id3v2: %w", err)
-
 	}
 
-	header := make([]byte, 4)
-	_, err = io.ReadFull(r, header)
+	header, audioStart, err := findFrameSync(r, int64(id3Size), size)
 	if err != nil {
-		return nil, fmt.Errorf("reading first frame header: %w", err)
+		return nil, err
 	}
 
 	// FLAC 文件可以在 fLaC 头之前包含 ID3v2 标签，
 	// 跳过 ID3v2 后如果遇到 fLaC 魔数，则转交给 FLAC 解析器处理。
 	if string(header) == "fLaC" {
-		_, err = r.Seek(int64(id3Size), io.SeekStart)
+		_, err = r.Seek(audioStart, io.SeekStart)
 		if err != nil {
 			return nil, fmt.Errorf("seeking back for FLAC parsing: %w", err)
 		}
 		return ReadFLACMeta(r)
-	}
-
-	// 验证 MP3 帧同步字（前 11 bits 应全为 1）
-	if header[0] != 0xFF || (header[1]&0xE0) != 0xE0 {
-		return nil, fmt.Errorf("invalid mp3 frame sync word at offset %d", id3Size)
 	}
 
 	// 解析 MP3 帧头信息
@@ -344,8 +339,7 @@ func ReadV2MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 	}
 
 	// 尝试解析 VBR 头
-	vbrOffset := int64(id3Size)
-	totalFrames, totalBytes, hasVBR, err := parseVBRHeader(r, vbrOffset, mpegVersion(version), mpegLayer(layer), protection)
+	totalFrames, totalBytes, hasVBR, err := parseVBRHeader(r, audioStart, mpegVersion(version), mpegLayer(layer), protection)
 	if err != nil {
 		// VBR 头解析失败，回退到 CBR 计算
 		fmt.Printf("Warning: failed to parse VBR header: %v, falling back to CBR calculation\n", err)
@@ -358,7 +352,7 @@ func ReadV2MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 		duration = time.Second * time.Duration(math.Round(float64(totalFrames)*frameDuration))
 	} else {
 		// 使用 CBR 计算方法
-		duration, err = getMP3Duration(header, size-int64(id3Size))
+		duration, err = getMP3Duration(header, size-audioStart)
 		if err != nil {
 			return nil, fmt.Errorf("reading the mp3 duration: %w", err)
 		}
@@ -378,6 +372,37 @@ func ReadV2MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 		sampleRate:    sampleRate,
 	}, nil
 
+}
+
+// findFrameSync 从 startOffset 处向前扫描，跳过 ID3v2 标签后的填充字节，
+// 找到第一个有效的 MP3 帧同步字（0xFF 0xE0+）或 fLaC 魔数。
+// 返回 4 字节帧头和该帧在文件中的绝对偏移。
+func findFrameSync(r io.ReadSeeker, startOffset, fileSize int64) (header []byte, frameOffset int64, err error) {
+	scanLimit := fileSize - startOffset
+	if scanLimit > maxPaddingScan {
+		scanLimit = maxPaddingScan
+	}
+	if scanLimit < 4 {
+		return nil, 0, fmt.Errorf("not enough data after ID3v2 tag to find frame sync")
+	}
+
+	buf := make([]byte, scanLimit)
+	n, err := io.ReadFull(r, buf)
+	if err != nil && err != io.ErrUnexpectedEOF {
+		return nil, 0, fmt.Errorf("reading data after ID3v2 tag: %w", err)
+	}
+	buf = buf[:n]
+
+	for i := 0; i <= n-4; i++ {
+		if buf[i] == 'f' && string(buf[i:i+4]) == "fLaC" {
+			return buf[i : i+4], startOffset + int64(i), nil
+		}
+		if buf[i] == 0xFF && (buf[i+1]&0xE0) == 0xE0 {
+			return buf[i : i+4], startOffset + int64(i), nil
+		}
+	}
+
+	return nil, 0, fmt.Errorf("no mp3 frame sync found within %d bytes after ID3v2 tag (offset %d)", scanLimit, startOffset)
 }
 
 func ReadV1MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {

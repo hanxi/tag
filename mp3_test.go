@@ -62,3 +62,38 @@ func TestMP3CBRDuration(t *testing.T) {
 	// 实际测试需要使用真实的 CBR MP3 文件
 	t.Skip("需要真实的 CBR MP3 测试文件")
 }
+
+func TestMP3WithPaddingAfterID3v2(t *testing.T) {
+	file, err := os.Open("testdata/with_tags/sample.padded.mp3")
+	if err != nil {
+		t.Skipf("test file not found: %v", err)
+	}
+	defer file.Close()
+
+	meta, err := ReadFrom(file)
+	if err != nil {
+		t.Fatalf("failed to read metadata: %v", err)
+	}
+
+	if meta.Title() != "半壶纱" {
+		t.Errorf("title = %q, want %q", meta.Title(), "半壶纱")
+	}
+	if meta.Artist() != "刘珂矣" {
+		t.Errorf("artist = %q, want %q", meta.Artist(), "刘珂矣")
+	}
+	if meta.Duration() == 0 {
+		t.Error("duration is zero")
+	}
+
+	expected := 222 * time.Second
+	diff := meta.Duration() - expected
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > 2*time.Second {
+		t.Errorf("duration %v differs from expected %v by %v", meta.Duration(), expected, diff)
+	}
+
+	t.Logf("Title: %s, Artist: %s, Duration: %v, BitRate: %d, SampleRate: %d",
+		meta.Title(), meta.Artist(), meta.Duration(), meta.BitRate(), meta.SampleRate())
+}
