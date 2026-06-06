@@ -23,13 +23,9 @@ func WriteAPE(filePath string, opts WriteOptions) error {
 		return fmt.Errorf("read ape file: %w", err)
 	}
 
-	// Strip existing APETAGEX footer if present
 	stripped := stripAPETagEX(original)
+	items, itemCount := buildAPEv2Items(opts)
 
-	// Build new APEv2 items
-	items := buildAPEv2Items(opts)
-
-	// Create temp file
 	dir := filepath.Dir(filePath)
 	tmp, err := os.CreateTemp(dir, ".songloft-tag-*.tmp")
 	if err != nil {
@@ -41,20 +37,18 @@ func WriteAPE(filePath string, opts WriteOptions) error {
 		_ = os.Remove(tmpPath)
 	}
 
-	// Write stripped audio data
 	if _, err := tmp.Write(stripped); err != nil {
 		cleanup()
 		return fmt.Errorf("write audio data: %w", err)
 	}
 
-	// Write APEv2 items
 	if _, err := tmp.Write(items); err != nil {
 		cleanup()
 		return fmt.Errorf("write tag items: %w", err)
 	}
 
-	// Write APETAGEX footer
-	footer := buildAPETagEXFooter(uint32(len(items)))
+	// APEv2 spec: tagSize = items + footer (32 bytes)
+	footer := buildAPETagEXFooter(uint32(len(items))+32, itemCount)
 	if _, err := tmp.Write(footer); err != nil {
 		cleanup()
 		return fmt.Errorf("write footer: %w", err)
@@ -81,9 +75,9 @@ func stripAPETagEX(data []byte) []byte {
 	if string(data[footerStart:footerStart+8]) != "APETAGEX" {
 		return data
 	}
+	// APEv2 spec: tagSize includes footer (32 bytes) + all items
 	tagSize := binary.LittleEndian.Uint32(data[footerStart+12 : footerStart+16])
-	// tag items start at footerStart - tagSize
-	audioEnd := int64(footerStart) - int64(tagSize)
+	audioEnd := int64(len(data)) - int64(tagSize)
 	if audioEnd < 0 || audioEnd > int64(len(data)) {
 		return data
 	}
@@ -91,9 +85,8 @@ func stripAPETagEX(data []byte) []byte {
 }
 
 // buildAPEv2Items encodes APEv2 tag items from WriteOptions.
-// Each item: [4B LE valueSize][4B LE flags][null-terminated key][value bytes]
-// Key names use Title case (APEv2 convention).
-func buildAPEv2Items(opts WriteOptions) []byte {
+// Returns the encoded bytes and the number of items.
+func buildAPEv2Items(opts WriteOptions) ([]byte, uint32) {
 	type item struct {
 		key   string
 		value string
@@ -120,34 +113,26 @@ func buildAPEv2Items(opts WriteOptions) []byte {
 
 	var buf bytes.Buffer
 	for _, e := range entries {
-		valueSize := uint32(len(e.value))
 		var sizeBuf [4]byte
-		binary.LittleEndian.PutUint32(sizeBuf[:], valueSize)
+		binary.LittleEndian.PutUint32(sizeBuf[:], uint32(len(e.value)))
 		buf.Write(sizeBuf[:])
-		// flags = 0 (no special flags)
-		binary.LittleEndian.PutUint32(sizeBuf[:], 0)
+		binary.LittleEndian.PutUint32(sizeBuf[:], 0) // flags = 0 (UTF-8 text)
 		buf.Write(sizeBuf[:])
 		buf.WriteString(e.key)
 		buf.WriteByte(0) // null terminator
 		buf.WriteString(e.value)
 	}
-	return buf.Bytes()
+	return buf.Bytes(), uint32(len(entries))
 }
 
 // buildAPETagEXFooter builds a 32-byte APETAGEX footer block.
-func buildAPETagEXFooter(itemsSize uint32) []byte {
+// tagSize must include items + footer (32 bytes) per APEv2 spec.
+func buildAPETagEXFooter(tagSize, itemCount uint32) []byte {
 	var buf [32]byte
 	copy(buf[0:8], "APETAGEX")
-	// version = 2000 (APEv2)
-	binary.LittleEndian.PutUint32(buf[8:12], 2000)
-	// tag size = items only (not including footer)
-	binary.LittleEndian.PutUint32(buf[12:16], itemsSize)
-	// item count - we don't know the exact count here but it's informational mostly
-	// We'll set it to 0 since ffmpeg and other tools don't strictly verify it
-	binary.LittleEndian.PutUint32(buf[16:20], 0)
-	// flags (bit 31 = header present, we don't write header so 0)
-	binary.LittleEndian.PutUint32(buf[20:24], 0)
-	// reserved
-	// buf[24:32] already zero
+	binary.LittleEndian.PutUint32(buf[8:12], 2000) // APEv2
+	binary.LittleEndian.PutUint32(buf[12:16], tagSize)
+	binary.LittleEndian.PutUint32(buf[16:20], itemCount)
+	binary.LittleEndian.PutUint32(buf[20:24], 0) // flags: this is a footer, no header
 	return buf[:]
 }

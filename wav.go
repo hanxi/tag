@@ -3,6 +3,7 @@ package tag
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -237,7 +238,12 @@ func (m *metadataWAV) AlbumArtist() string {
 
 func (m *metadataWAV) Composer() string { return "" }
 
-func (m *metadataWAV) Year() int { return 0 }
+func (m *metadataWAV) Year() int {
+	if y, err := strconv.Atoi(m.year); err == nil {
+		return y
+	}
+	return 0
+}
 
 func (m *metadataWAV) Genre() string { return m.genre }
 

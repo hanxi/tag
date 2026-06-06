@@ -85,9 +85,8 @@ func WriteWAV(filePath string, opts WriteOptions) error {
 				}
 				continue
 			}
-			// Not INFO, read the full chunk including the subtype
+			// Not INFO — seek back to data start and read the full chunk payload
 			_, _ = src.Seek(dataStart, io.SeekStart)
-			chunkSize += 4 // include the 4-byte subtype
 		}
 
 		data := make([]byte, chunkSize)
