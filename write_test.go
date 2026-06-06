@@ -169,6 +169,40 @@ func TestWriteFLAC_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestWriteFLAC_WithID3v2Prefix(t *testing.T) {
+	path := copyFixture(t, "testdata/with_id3v2_prefix/sample.flac")
+
+	opts := WriteOptions{
+		Title:  "New Title",
+		Artist: "New Artist",
+	}
+	if err := WriteTag(path, opts); err != nil {
+		t.Fatalf("WriteTag: %v", err)
+	}
+
+	// 写入后 ID3v2 前缀应被剥离，文件以 fLaC 开头
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	var magic [4]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil {
+		t.Fatalf("read magic: %v", err)
+	}
+	f.Close()
+	if string(magic[:]) != "fLaC" {
+		t.Errorf("after write, file should start with fLaC, got %q", string(magic[:]))
+	}
+
+	m := readBackMetadata(t, path)
+	if got := m.Title(); got != opts.Title {
+		t.Errorf("Title: got %q, want %q", got, opts.Title)
+	}
+	if got := m.Artist(); got != opts.Artist {
+		t.Errorf("Artist: got %q, want %q", got, opts.Artist)
+	}
+}
+
 func TestWriteTag_UnsupportedFormat(t *testing.T) {
 	tmp, err := os.CreateTemp(t.TempDir(), "unsupported-*.xyz")
 	if err != nil {

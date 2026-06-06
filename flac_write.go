@@ -40,6 +40,15 @@ func WriteFLAC(filePath string, opts WriteOptions) error {
 	}
 	defer src.Close()
 
+	// 跳过可能存在的 ID3v2 头（部分工具会给 FLAC 文件加 ID3v2 前缀）
+	id3Offset, err := id3v2AudioOffset(src)
+	if err != nil {
+		return fmt.Errorf("detect id3v2: %w", err)
+	}
+	if _, err := src.Seek(id3Offset, io.SeekStart); err != nil {
+		return fmt.Errorf("seek past id3v2: %w", err)
+	}
+
 	var magic [4]byte
 	if _, err := io.ReadFull(src, magic[:]); err != nil {
 		return fmt.Errorf("read magic: %w", err)
