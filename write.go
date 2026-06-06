@@ -48,6 +48,10 @@ func WriteTag(filePath string, opts WriteOptions) error {
 		return WriteID3v2(filePath, opts)
 	case ".flac":
 		return WriteFLAC(filePath, opts)
+	case ".ape":
+		return WriteAPE(filePath, opts)
+	case ".wav":
+		return WriteWAV(filePath, opts)
 	case ".m4a", ".mp4", ".m4b":
 		return WriteMP4(filePath, opts)
 	case ".ogg", ".oga":

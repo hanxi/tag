@@ -3,6 +3,7 @@ package tag
 import (
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -51,6 +52,24 @@ func ReadWAVMeta(r io.ReadSeeker) (Metadata, error) {
 		}
 
 		switch chunkID {
+		case "LIST":
+			listType, err := readString(r, 4)
+			if err != nil {
+				return nil, err
+			}
+			if listType == "INFO" {
+				if err := m.readLISTInfo(r, int64(chunkSize)-4); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			// Other LIST types: skip
+			_, err = r.Seek(int64(chunkSize)-4, io.SeekCurrent)
+			if err != nil {
+				return nil, err
+			}
+			continue
+
 		case "fmt ":
 			err = m.readFmtChunk(r, chunkSize)
 			if err != nil {
@@ -97,6 +116,57 @@ type metadataWAV struct {
 	channels       uint16
 	dataSize       uint32
 	duration       time.Duration
+	title          string
+	artist         string
+	album          string
+	year           string
+	genre          string
+	comment        string
+}
+
+func (m *metadataWAV) readLISTInfo(r io.ReadSeeker, size int64) error {
+	endPos, _ := r.Seek(0, io.SeekCurrent)
+	endPos += size
+	for {
+		cur, _ := r.Seek(0, io.SeekCurrent)
+		if cur >= endPos {
+			break
+		}
+		id, err := readString(r, 4)
+		if err != nil {
+			return nil
+		}
+		subSize, err := readUint32LittleEndian(r)
+		if err != nil {
+			return nil
+		}
+		data := make([]byte, subSize)
+		if _, err := io.ReadFull(r, data); err != nil {
+			return nil
+		}
+		str := strings.TrimRight(string(data), "\x00")
+		switch id {
+		case "INAM":
+			m.title = str
+		case "IART":
+			m.artist = str
+		case "IPRD":
+			m.album = str
+		case "ICRD":
+			m.year = str
+		case "IGNR":
+			m.genre = str
+		case "ICMT":
+			m.comment = str
+		}
+		// Word-aligned padding
+		if subSize%2 == 1 {
+			if _, err := r.Seek(1, io.SeekCurrent); err != nil {
+				return nil
+			}
+		}
+	}
+	return nil
 }
 
 func (m *metadataWAV) readFmtChunk(r io.ReadSeeker, chunkSize uint32) error {
@@ -155,33 +225,21 @@ func (m *metadataWAV) FileType() FileType {
 	return WAV
 }
 
-func (m *metadataWAV) Title() string {
-	return ""
-}
+func (m *metadataWAV) Title() string { return m.title }
 
-func (m *metadataWAV) Album() string {
-	return ""
-}
+func (m *metadataWAV) Album() string { return m.album }
 
-func (m *metadataWAV) Artist() string {
-	return ""
-}
+func (m *metadataWAV) Artist() string { return m.artist }
 
 func (m *metadataWAV) AlbumArtist() string {
 	return ""
 }
 
-func (m *metadataWAV) Composer() string {
-	return ""
-}
+func (m *metadataWAV) Composer() string { return "" }
 
-func (m *metadataWAV) Year() int {
-	return 0
-}
+func (m *metadataWAV) Year() int { return 0 }
 
-func (m *metadataWAV) Genre() string {
-	return ""
-}
+func (m *metadataWAV) Genre() string { return m.genre }
 
 func (m *metadataWAV) Track() (int, int) {
 	return 0, 0
@@ -195,13 +253,9 @@ func (m *metadataWAV) Picture() *Picture {
 	return nil
 }
 
-func (m *metadataWAV) Lyrics() string {
-	return ""
-}
+func (m *metadataWAV) Lyrics() string { return "" }
 
-func (m *metadataWAV) Comment() string {
-	return ""
-}
+func (m *metadataWAV) Comment() string { return m.comment }
 
 func (m *metadataWAV) Raw() map[string]interface{} {
 	return map[string]interface{}{

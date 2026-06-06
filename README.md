@@ -2,7 +2,7 @@
 
 [![GoDoc](https://pkg.go.dev/badge/github.com/hanxi/tag)](https://pkg.go.dev/github.com/hanxi/tag)
 
-This package provides MP3 (ID3v1,2.{2,3,4}) and MP4 (ACC, M4A, ALAC), OGG and FLAC metadata detection, parsing and artwork extraction. It also supports **writing** tags back to MP3 (ID3v2.3) and FLAC (Vorbis Comment + Picture block); M4A/OGG writers are TODO and return `ErrUnsupportedWrite` for now.
+This package provides MP3 (ID3v1,2.{2,3,4}), MP4 (AAC, M4A, ALAC), OGG, FLAC, WAV, and Monkey's Audio (APE) metadata detection, parsing and artwork extraction. It also supports **writing** tags back to MP3 (ID3v2.3), FLAC (Vorbis Comment + Picture), APE (APEv2 footer), and WAV (RIFF LIST INFO); M4A/OGG writers are TODO and return `ErrUnsupportedWrite` for now.
 
 > Forked from upstream and extended with encoding detection improvements plus MP3 (ID3v2.3) / FLAC (Vorbis Comment + PICTURE) writers used by Songloft.
 
@@ -45,6 +45,8 @@ Format dispatch is by file extension:
 |-----------|--------|--------------------------|
 | `.mp3` | ✅ ID3v2.3 | TIT2 / TPE1 / TPE2 / TALB / TYER / TCON / USLT / APIC |
 | `.flac` | ✅ Vorbis Comment + PICTURE | TITLE / ARTIST / ALBUMARTIST / ALBUM / DATE / GENRE / LYRICS + Picture(Front) |
+| `.ape` | ✅ APEv2 | Title / Artist / Album / Year / Genre / Lyrics + Comment |
+| `.wav` | ✅ RIFF LIST INFO | INAM / IART / IPRD / ICRD / IGNR / ICMT |
 | `.m4a` / `.mp4` / `.m4b` | ⚠️ TODO | Returns `ErrUnsupportedWrite` |
 | `.ogg` / `.oga` | ⚠️ TODO | Returns `ErrUnsupportedWrite` |
 
