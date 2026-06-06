@@ -64,6 +64,9 @@ func ReadFrom(r io.ReadSeeker) (Metadata, error) {
 		}
 		return ReadV1MP3Meta(r, size)
 
+	case string(b[0:4]) == "MAC ":
+		return ReadAPEMeta(r)
+
 	case string(b[0:4]) == "DSD ":
 		return ReadDSFMeta(r)
 
@@ -106,6 +109,7 @@ const (
 	ID3v2_4       Format = "ID3v2.4" // ID3v2.4 tag format.
 	MP4           Format = "MP4"     // MP4 tag (atom) format (see http://www.ftyps.com/ for a full file type list)
 	VORBIS        Format = "VORBIS"  // Vorbis Comment tag format.
+	APEv2         Format = "APEv2"   // APEv2 tag format (Monkey's Audio / WavPack / Musepack)
 )
 
 // FileType is an enumeration of the audio file types supported by this package, in particular
@@ -125,6 +129,7 @@ const (
 	OGG             FileType = "OGG"  // OGG file
 	DSF             FileType = "DSF"  // DSF file DSD Sony format see https://dsd-guide.com/sites/default/files/white-papers/DSFFileFormatSpec_E.pdf
 	WAV             FileType = "WAV"  // WAVE file
+	APE             FileType = "APE"  // Monkey's Audio file
 )
 
 // Metadata is an interface which is used to describe metadata retrieved by this package.
