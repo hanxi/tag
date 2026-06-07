@@ -210,7 +210,7 @@ func ReadAPEMeta(r io.ReadSeeker) (Metadata, error) {
 		if _, err := io.ReadFull(r, value); err != nil {
 			break
 		}
-		valueStr := string(value)
+		valueStr := fixEncoding(value)
 
 		switch strings.ToLower(key) {
 		case "title":

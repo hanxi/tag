@@ -1,10 +1,10 @@
 package tag
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -145,7 +145,7 @@ func (m *metadataWAV) readLISTInfo(r io.ReadSeeker, size int64) error {
 		if _, err := io.ReadFull(r, data); err != nil {
 			return nil
 		}
-		str := strings.TrimRight(string(data), "\x00")
+		str := fixEncoding(bytes.TrimRight(data, "\x00"))
 		switch id {
 		case "INAM":
 			m.title = str

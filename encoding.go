@@ -13,6 +13,11 @@ import (
 	"golang.org/x/text/transform"
 )
 
+// FixEncoding attempts to fix encoding issues in byte data (exported wrapper).
+func FixEncoding(b []byte) string {
+	return fixEncoding(b)
+}
+
 // fixEncoding 尝试修复可能的编码问题
 // 主要处理 GBK/GB2312/GB18030 等中文编码被错误解码为 UTF-8 的情况
 func fixEncoding(b []byte) string {
