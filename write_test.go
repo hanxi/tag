@@ -5,6 +5,7 @@
 package tag
 
 import (
+	"encoding/binary"
 	"errors"
 	"io"
 	"os"
@@ -415,5 +416,109 @@ func TestWriteOGG_WithPicture(t *testing.T) {
 		t.Error("Picture: got nil, want non-nil")
 	} else if string(pic.Data) != string(opts.Picture.Data) {
 		t.Errorf("Picture data mismatch: got %d bytes, want %d bytes", len(pic.Data), len(opts.Picture.Data))
+	}
+}
+
+// createMinimalAPE 创建一个最小合法 APE 文件（v3.99 格式，无音频数据）
+func createMinimalAPE(t *testing.T) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "ape-test-*.ape")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	defer f.Close()
+
+	// APE_DESCRIPTOR (52 bytes): "MAC " + version + padding + descriptor fields + MD5
+	f.WriteString("MAC ")
+	binary.Write(f, binary.LittleEndian, uint16(3990)) // version
+	binary.Write(f, binary.LittleEndian, uint16(0))    // padding
+	binary.Write(f, binary.LittleEndian, uint32(52))   // descriptorBytes
+	binary.Write(f, binary.LittleEndian, uint32(24))   // headerBytes
+	f.Write(make([]byte, 36))                          // remaining descriptor fields + MD5
+
+	// APE_HEADER (24 bytes)
+	binary.Write(f, binary.LittleEndian, uint16(2000))  // compressionType
+	binary.Write(f, binary.LittleEndian, uint16(0))     // formatFlags
+	binary.Write(f, binary.LittleEndian, uint32(73728)) // blocksPerFrame
+	binary.Write(f, binary.LittleEndian, uint32(0))     // finalFrameBlocks
+	binary.Write(f, binary.LittleEndian, uint32(0))     // totalFrames
+	binary.Write(f, binary.LittleEndian, uint16(16))    // bitsPerSample
+	binary.Write(f, binary.LittleEndian, uint16(2))     // channels
+	binary.Write(f, binary.LittleEndian, uint32(44100)) // sampleRate
+
+	return f.Name()
+}
+
+func TestWriteAPE_RoundTrip_WithPicture(t *testing.T) {
+	path := createMinimalAPE(t)
+
+	opts := WriteOptions{
+		Title:  "APE Title",
+		Artist: "APE Artist",
+		Album:  "APE Album",
+		Year:   2026,
+		Genre:  "Rock",
+		Lyrics: "APE lyrics\n第二行",
+		Picture: &Picture{
+			MIMEType: "image/jpeg",
+			Data:     []byte{0xff, 0xd8, 0xff, 0xe0, 0xde, 0xad, 0xbe, 0xef},
+		},
+	}
+	if err := WriteTag(path, opts); err != nil {
+		t.Fatalf("WriteTag: %v", err)
+	}
+
+	m := readBackMetadata(t, path)
+	if got := m.Title(); got != opts.Title {
+		t.Errorf("Title: got %q, want %q", got, opts.Title)
+	}
+	if got := m.Artist(); got != opts.Artist {
+		t.Errorf("Artist: got %q, want %q", got, opts.Artist)
+	}
+	if got := m.Album(); got != opts.Album {
+		t.Errorf("Album: got %q, want %q", got, opts.Album)
+	}
+	if got := m.Year(); got != opts.Year {
+		t.Errorf("Year: got %d, want %d", got, opts.Year)
+	}
+	if got := m.Genre(); got != opts.Genre {
+		t.Errorf("Genre: got %q, want %q", got, opts.Genre)
+	}
+	if got := m.Lyrics(); got != opts.Lyrics {
+		t.Errorf("Lyrics: got %q, want %q", got, opts.Lyrics)
+	}
+	if pic := m.Picture(); pic == nil {
+		t.Error("Picture: got nil, want non-nil")
+	} else if string(pic.Data) != string(opts.Picture.Data) {
+		t.Errorf("Picture data mismatch: got %d bytes, want %d bytes", len(pic.Data), len(opts.Picture.Data))
+	}
+}
+
+func TestWriteAPE_OverwriteExistingTag(t *testing.T) {
+	path := createMinimalAPE(t)
+
+	opts1 := WriteOptions{Title: "Old Title", Artist: "Old Artist"}
+	if err := WriteTag(path, opts1); err != nil {
+		t.Fatalf("WriteTag (first): %v", err)
+	}
+
+	opts2 := WriteOptions{
+		Title:  "New Title",
+		Artist: "New Artist",
+		Lyrics: "New lyrics",
+	}
+	if err := WriteTag(path, opts2); err != nil {
+		t.Fatalf("WriteTag (second): %v", err)
+	}
+
+	m := readBackMetadata(t, path)
+	if got := m.Title(); got != opts2.Title {
+		t.Errorf("Title: got %q, want %q", got, opts2.Title)
+	}
+	if got := m.Artist(); got != opts2.Artist {
+		t.Errorf("Artist: got %q, want %q", got, opts2.Artist)
+	}
+	if got := m.Lyrics(); got != opts2.Lyrics {
+		t.Errorf("Lyrics: got %q, want %q", got, opts2.Lyrics)
 	}
 }

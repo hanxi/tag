@@ -1,6 +1,7 @@
 package tag
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -186,7 +187,8 @@ func ReadAPEMeta(r io.ReadSeeker) (Metadata, error) {
 		if err != nil {
 			break
 		}
-		if _, err := readUint32LittleEndian(r); err != nil { // itemFlags
+		itemFlags, err := readUint32LittleEndian(r)
+		if err != nil {
 			break
 		}
 
@@ -210,8 +212,24 @@ func ReadAPEMeta(r io.ReadSeeker) (Metadata, error) {
 		if _, err := io.ReadFull(r, value); err != nil {
 			break
 		}
-		valueStr := fixEncoding(value)
 
+		// APEv2 item flags bits 1-2: 0=text, 1=binary, 2=external
+		isBinary := (itemFlags>>1)&0x03 == 1
+
+		if isBinary && strings.ToLower(key) == "cover art (front)" {
+			// 二进制封面：[filename\0][image data]
+			if nullIdx := bytes.IndexByte(value, 0); nullIdx >= 0 && nullIdx+1 < len(value) {
+				imgData := value[nullIdx+1:]
+				mime := "image/jpeg"
+				if bytes.HasPrefix(imgData, pngHeader) {
+					mime = "image/png"
+				}
+				m.picture = &Picture{Data: imgData, MIMEType: mime}
+			}
+			continue
+		}
+
+		valueStr := fixEncoding(value)
 		switch strings.ToLower(key) {
 		case "title":
 			m.title = valueStr
@@ -246,6 +264,7 @@ type metadataAPE struct {
 	genre         string
 	lyrics        string
 	comment       string
+	picture       *Picture
 	fileSize      int64
 	bitsPerSample int
 	sampleRate    int
@@ -264,7 +283,7 @@ func (m *metadataAPE) Year() int              { return m.year }
 func (m *metadataAPE) Genre() string          { return m.genre }
 func (m *metadataAPE) Track() (int, int)      { return 0, 0 }
 func (m *metadataAPE) Disc() (int, int)       { return 0, 0 }
-func (m *metadataAPE) Picture() *Picture      { return nil }
+func (m *metadataAPE) Picture() *Picture      { return m.picture }
 func (m *metadataAPE) Lyrics() string         { return m.lyrics }
 func (m *metadataAPE) Comment() string        { return m.comment }
 func (m *metadataAPE) Duration() time.Duration { return m.duration }

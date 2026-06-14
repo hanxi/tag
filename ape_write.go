@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // WriteAPE writes APEv2 tags to a Monkey's Audio file.
@@ -112,6 +113,7 @@ func buildAPEv2Items(opts WriteOptions) ([]byte, uint32) {
 	}
 
 	var buf bytes.Buffer
+	var totalItems uint32
 	for _, e := range entries {
 		var sizeBuf [4]byte
 		binary.LittleEndian.PutUint32(sizeBuf[:], uint32(len(e.value)))
@@ -121,8 +123,31 @@ func buildAPEv2Items(opts WriteOptions) ([]byte, uint32) {
 		buf.WriteString(e.key)
 		buf.WriteByte(0) // null terminator
 		buf.WriteString(e.value)
+		totalItems++
 	}
-	return buf.Bytes(), uint32(len(entries))
+
+	// 封面：APEv2 binary item, key="Cover Art (Front)", value=[filename\0][image data]
+	if opts.Picture != nil && len(opts.Picture.Data) > 0 {
+		ext := "jpg"
+		if strings.Contains(opts.Picture.MIMEType, "png") {
+			ext = "png"
+		}
+		filename := "cover." + ext
+		valueLen := len(filename) + 1 + len(opts.Picture.Data)
+		var sizeBuf [4]byte
+		binary.LittleEndian.PutUint32(sizeBuf[:], uint32(valueLen))
+		buf.Write(sizeBuf[:])
+		binary.LittleEndian.PutUint32(sizeBuf[:], 0x02) // flags: bits 1-2 = 1 (binary)
+		buf.Write(sizeBuf[:])
+		buf.WriteString("Cover Art (Front)")
+		buf.WriteByte(0) // key null terminator
+		buf.WriteString(filename)
+		buf.WriteByte(0) // filename null terminator
+		buf.Write(opts.Picture.Data)
+		totalItems++
+	}
+
+	return buf.Bytes(), totalItems
 }
 
 // buildAPETagEXFooter builds a 32-byte APETAGEX footer block.

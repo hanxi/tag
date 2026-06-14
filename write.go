@@ -33,11 +33,15 @@ type WriteOptions struct {
 
 // WriteTag writes the supplied metadata into the music file at filePath.
 //
-// The format is selected by file extension. Supported:
-//   - .mp3  → ID3v2.3 (TIT2, TPE1, TPE2, TALB, TYER, TCON, USLT, APIC)
-//   - .flac → Vorbis Comment + PICTURE block
-//   - .m4a / .mp4 / .m4b → iTunes-style atoms (©nam, ©ART, ©alb, ©day, ©lyr, covr)
-//   - .ogg / .oga → Vorbis Comment (in Ogg container)
+// The format is selected by file extension. Supported formats and their tag mappings:
+//
+//	Format          | Text fields              | Lyrics      | Picture
+//	.mp3            | ID3v2.3 text frames      | USLT        | APIC
+//	.flac           | Vorbis Comment           | LYRICS      | PICTURE block
+//	.m4a/.mp4/.m4b  | iTunes atoms (©nam etc)  | ©lyr        | covr
+//	.ogg/.oga       | Vorbis Comment           | LYRICS      | METADATA_BLOCK_PICTURE
+//	.ape            | APEv2 items              | Lyrics      | Cover Art (Front) (binary)
+//	.wav            | RIFF LIST INFO           | ICMT        | (not supported)
 //
 // Returns ErrUnsupportedWrite for other extensions. The original file is
 // rewritten atomically (write to a sibling temp file then rename).
