@@ -66,6 +66,9 @@ func Identify(r io.ReadSeeker) (format Format, fileType FileType, err error) {
 		// call Identify() again, replacing whatever fileType it finds with WAV
 		format, _, err = Identify(r)
 		return format, WAV, err
+
+	case string(b[0:4]) == "FORM" && (string(b[8:12]) == "AIFF" || string(b[8:12]) == "AIFC"):
+		return UnknownFormat, AIFF, nil
 	}
 
 	n, err := r.Seek(-128, io.SeekEnd)

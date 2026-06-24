@@ -72,6 +72,9 @@ func ReadFrom(r io.ReadSeeker) (Metadata, error) {
 
 	case string(b[0:4]) == "RIFF":
 		return ReadWAVMeta(r)
+
+	case string(b[0:4]) == "FORM":
+		return ReadAIFFMeta(r)
 	}
 
 	return nil, errors.ErrUnsupported
@@ -129,6 +132,7 @@ const (
 	OGG             FileType = "OGG"  // OGG file
 	DSF             FileType = "DSF"  // DSF file DSD Sony format see https://dsd-guide.com/sites/default/files/white-papers/DSFFileFormatSpec_E.pdf
 	WAV             FileType = "WAV"  // WAVE file
+	AIFF            FileType = "AIFF" // AIFF/AIFF-C file
 	APE             FileType = "APE"  // Monkey's Audio file
 )
 
