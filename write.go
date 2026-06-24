@@ -61,7 +61,7 @@ func WriteTag(filePath string, opts WriteOptions) error {
 	case ".ogg", ".oga":
 		return WriteOGG(filePath, opts)
 	case ".aif", ".aiff":
-		return fmt.Errorf("%w: %s", ErrUnsupportedWrite, ext)
+		return WriteAIFF(filePath, opts)
 	default:
 		return fmt.Errorf("%w: %s", ErrUnsupportedWrite, ext)
 	}

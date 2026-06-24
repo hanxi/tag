@@ -181,14 +181,12 @@ func (m *metadataAIFF) readID3Chunk(r io.ReadSeeker, chunkSize uint32) error {
 		return err
 	}
 
-	id3Meta, err := ReadV2MP3Meta(r, int64(startPos)+int64(chunkSize))
+	id3Meta, err := ReadID3v2Tags(r)
 	if err != nil {
-		// Seek to end of chunk on failure
 		_, _ = r.Seek(startPos+int64(chunkSize), io.SeekStart)
 		return nil
 	}
 
-	// Copy metadata from ID3 tag (overrides native chunks)
 	if t := id3Meta.Title(); t != "" {
 		m.title = t
 	}
@@ -228,7 +226,6 @@ func (m *metadataAIFF) readID3Chunk(r io.ReadSeeker, chunkSize uint32) error {
 		m.comment = c
 	}
 
-	// Ensure we're at the right position
 	_, err = r.Seek(startPos+int64(chunkSize), io.SeekStart)
 	return err
 }

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -241,5 +243,166 @@ func TestParseIEEE754Extended(t *testing.T) {
 				t.Errorf("Expected %v, got %v", tt.rate, decoded)
 			}
 		})
+	}
+}
+
+func createTestAIFFFile(t *testing.T) string {
+	t.Helper()
+	data := createTestAIFF(44100, 2, 16, 44100)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.aif")
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+	return path
+}
+
+func TestWriteAIFF_RoundTrip(t *testing.T) {
+	path := createTestAIFFFile(t)
+
+	opts := WriteOptions{
+		Title:       "AIFF Title",
+		Artist:      "AIFF Artist",
+		AlbumArtist: "AIFF Album Artist",
+		Album:       "AIFF Album",
+		Year:        2026,
+		Genre:       "Electronic",
+		Lyrics:      "Line 1\nLine 2 中文歌词",
+		Picture: &Picture{
+			MIMEType: "image/jpeg",
+			Data:     []byte{0xff, 0xd8, 0xff, 0xe0, 0xde, 0xad, 0xbe, 0xef},
+		},
+	}
+
+	if err := WriteTag(path, opts); err != nil {
+		t.Fatalf("WriteTag: %v", err)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer f.Close()
+
+	m, err := ReadFrom(f)
+	if err != nil {
+		t.Fatalf("ReadFrom: %v", err)
+	}
+
+	if got := m.Title(); got != opts.Title {
+		t.Errorf("Title: got %q, want %q", got, opts.Title)
+	}
+	if got := m.Artist(); got != opts.Artist {
+		t.Errorf("Artist: got %q, want %q", got, opts.Artist)
+	}
+	if got := m.Album(); got != opts.Album {
+		t.Errorf("Album: got %q, want %q", got, opts.Album)
+	}
+	if got := m.AlbumArtist(); got != opts.AlbumArtist {
+		t.Errorf("AlbumArtist: got %q, want %q", got, opts.AlbumArtist)
+	}
+	if got := m.Year(); got != opts.Year {
+		t.Errorf("Year: got %d, want %d", got, opts.Year)
+	}
+	if got := m.Genre(); got != opts.Genre {
+		t.Errorf("Genre: got %q, want %q", got, opts.Genre)
+	}
+	if got := m.Lyrics(); got != opts.Lyrics {
+		t.Errorf("Lyrics: got %q, want %q", got, opts.Lyrics)
+	}
+	if pic := m.Picture(); pic == nil {
+		t.Error("Picture: got nil, want non-nil")
+	} else if string(pic.Data) != string(opts.Picture.Data) {
+		t.Errorf("Picture data mismatch: got %d bytes, want %d", len(pic.Data), len(opts.Picture.Data))
+	}
+}
+
+func TestWriteAIFF_PreservesAudio(t *testing.T) {
+	path := createTestAIFFFile(t)
+
+	// Read original duration
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	origMeta, err := ReadAIFFMeta(f)
+	if err != nil {
+		f.Close()
+		t.Fatalf("ReadAIFFMeta: %v", err)
+	}
+	origDuration := origMeta.Duration()
+	origSampleRate := origMeta.SampleRate()
+	f.Close()
+
+	// Write metadata
+	opts := WriteOptions{
+		Title:  "Test",
+		Artist: "Artist",
+	}
+	if err := WriteTag(path, opts); err != nil {
+		t.Fatalf("WriteTag: %v", err)
+	}
+
+	// Read back and verify audio params are preserved
+	f, err = os.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer f.Close()
+
+	m, err := ReadAIFFMeta(f)
+	if err != nil {
+		t.Fatalf("ReadAIFFMeta: %v", err)
+	}
+
+	if m.Duration() != origDuration {
+		t.Errorf("Duration changed: got %v, want %v", m.Duration(), origDuration)
+	}
+	if m.SampleRate() != origSampleRate {
+		t.Errorf("SampleRate changed: got %d, want %d", m.SampleRate(), origSampleRate)
+	}
+}
+
+func TestWriteAIFF_OverwriteExisting(t *testing.T) {
+	path := createTestAIFFFile(t)
+
+	// First write
+	opts1 := WriteOptions{
+		Title:  "First Title",
+		Artist: "First Artist",
+	}
+	if err := WriteTag(path, opts1); err != nil {
+		t.Fatalf("first WriteTag: %v", err)
+	}
+
+	// Second write (overwrite)
+	opts2 := WriteOptions{
+		Title:  "Second Title",
+		Artist: "Second Artist",
+		Album:  "New Album",
+	}
+	if err := WriteTag(path, opts2); err != nil {
+		t.Fatalf("second WriteTag: %v", err)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer f.Close()
+
+	m, err := ReadFrom(f)
+	if err != nil {
+		t.Fatalf("ReadFrom: %v", err)
+	}
+
+	if got := m.Title(); got != opts2.Title {
+		t.Errorf("Title: got %q, want %q", got, opts2.Title)
+	}
+	if got := m.Artist(); got != opts2.Artist {
+		t.Errorf("Artist: got %q, want %q", got, opts2.Artist)
+	}
+	if got := m.Album(); got != opts2.Album {
+		t.Errorf("Album: got %q, want %q", got, opts2.Album)
 	}
 }
