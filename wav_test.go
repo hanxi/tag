@@ -41,6 +41,45 @@ func createTestWAV(sampleRate uint32, channels uint16, bitsPerSample uint16, dur
 	return buf.Bytes()
 }
 
+func createTestWAVWithID3(opts WriteOptions) []byte {
+	var body bytes.Buffer
+
+	// fmt chunk
+	body.WriteString("fmt ")
+	binary.Write(&body, binary.LittleEndian, uint32(16))
+	binary.Write(&body, binary.LittleEndian, uint16(1))
+	binary.Write(&body, binary.LittleEndian, uint16(2))
+	binary.Write(&body, binary.LittleEndian, uint32(44100))
+	binary.Write(&body, binary.LittleEndian, uint32(44100*2*2))
+	binary.Write(&body, binary.LittleEndian, uint16(2*2))
+	binary.Write(&body, binary.LittleEndian, uint16(16))
+
+	frames, _ := buildID3v2Frames(opts)
+	id3 := []byte{'I', 'D', '3', 0x03, 0x00, 0x00}
+	size := encodeSyncSafe(uint32(len(frames)))
+	id3 = append(id3, size[:]...)
+	id3 = append(id3, frames...)
+	body.WriteString("ID3 ")
+	binary.Write(&body, binary.LittleEndian, uint32(len(id3)))
+	body.Write(id3)
+	if len(id3)%2 == 1 {
+		body.WriteByte(0)
+	}
+
+	// data chunk
+	body.WriteString("data")
+	binary.Write(&body, binary.LittleEndian, uint32(4))
+	body.Write([]byte{0, 0, 0, 0})
+
+	var buf bytes.Buffer
+	buf.WriteString("RIFF")
+	binary.Write(&buf, binary.LittleEndian, uint32(4+body.Len()))
+	buf.WriteString("WAVE")
+	buf.Write(body.Bytes())
+
+	return buf.Bytes()
+}
+
 func TestWAVDuration(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -143,5 +182,65 @@ func TestWAVMetadataInterface(t *testing.T) {
 	}
 	if meta.Picture() != nil {
 		t.Errorf("Expected nil picture, got %v", meta.Picture())
+	}
+}
+
+func TestWAVID3Chunk(t *testing.T) {
+	pictureData := []byte{0xff, 0xd8, 0xff, 0xd9}
+	wavData := createTestWAVWithID3(WriteOptions{
+		Title:       "Song Title",
+		Artist:      "Song Artist",
+		Album:       "Song Album",
+		AlbumArtist: "Album Artist",
+		Year:        2026,
+		Genre:       "Pop",
+		Lyrics:      "la la",
+		Picture: &Picture{
+			MIMEType: "image/jpeg",
+			Data:     pictureData,
+		},
+	})
+
+	meta, err := ReadWAVMeta(bytes.NewReader(wavData))
+	if err != nil {
+		t.Fatalf("ReadWAVMeta failed: %v", err)
+	}
+
+	if meta.FileType() != WAV {
+		t.Fatalf("Expected file type WAV, got %v", meta.FileType())
+	}
+	if meta.Format() != ID3v2_3 {
+		t.Errorf("Expected format %v, got %v", ID3v2_3, meta.Format())
+	}
+	if meta.Title() != "Song Title" {
+		t.Errorf("Expected title from ID3 chunk, got %q", meta.Title())
+	}
+	if meta.Artist() != "Song Artist" {
+		t.Errorf("Expected artist from ID3 chunk, got %q", meta.Artist())
+	}
+	if meta.Album() != "Song Album" {
+		t.Errorf("Expected album from ID3 chunk, got %q", meta.Album())
+	}
+	if meta.AlbumArtist() != "Album Artist" {
+		t.Errorf("Expected album artist from ID3 chunk, got %q", meta.AlbumArtist())
+	}
+	if meta.Year() != 2026 {
+		t.Errorf("Expected year 2026, got %d", meta.Year())
+	}
+	if meta.Genre() != "Pop" {
+		t.Errorf("Expected genre Pop, got %q", meta.Genre())
+	}
+	if meta.Lyrics() != "la la" {
+		t.Errorf("Expected lyrics from ID3 chunk, got %q", meta.Lyrics())
+	}
+	pic := meta.Picture()
+	if pic == nil {
+		t.Fatal("Expected picture from ID3 chunk")
+	}
+	if pic.MIMEType != "image/jpeg" {
+		t.Errorf("Expected image/jpeg picture, got %q", pic.MIMEType)
+	}
+	if !bytes.Equal(pic.Data, pictureData) {
+		t.Errorf("Expected picture data %v, got %v", pictureData, pic.Data)
 	}
 }

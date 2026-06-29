@@ -71,6 +71,10 @@ func ReadWAVMeta(r io.ReadSeeker) (Metadata, error) {
 			}
 			continue
 
+		case "ID3 ":
+			if err := m.readID3Chunk(r, chunkSize); err != nil {
+				return nil, err
+			}
 		case "fmt ":
 			err = m.readFmtChunk(r, chunkSize)
 			if err != nil {
@@ -112,17 +116,26 @@ func ReadWAVMeta(r io.ReadSeeker) (Metadata, error) {
 }
 
 type metadataWAV struct {
-	sampleRate     uint32
-	bitsPerSample  uint16
-	channels       uint16
-	dataSize       uint32
-	duration       time.Duration
-	title          string
-	artist         string
-	album          string
-	year           string
-	genre          string
-	comment        string
+	sampleRate    uint32
+	bitsPerSample uint16
+	channels      uint16
+	dataSize      uint32
+	duration      time.Duration
+	format        Format
+	title         string
+	artist        string
+	album         string
+	albumArtist   string
+	composer      string
+	year          string
+	genre         string
+	track         int
+	trackTotal    int
+	disc          int
+	discTotal     int
+	picture       *Picture
+	lyrics        string
+	comment       string
 }
 
 func (m *metadataWAV) readLISTInfo(r io.ReadSeeker, size int64) error {
@@ -170,13 +183,70 @@ func (m *metadataWAV) readLISTInfo(r io.ReadSeeker, size int64) error {
 	return nil
 }
 
+func (m *metadataWAV) readID3Chunk(r io.ReadSeeker, chunkSize uint32) error {
+	startPos, err := r.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return err
+	}
+
+	id3Meta, err := ReadID3v2Tags(r)
+	if err == nil {
+		m.mergeID3(id3Meta)
+	}
+
+	_, err = r.Seek(startPos+int64(chunkSize), io.SeekStart)
+	return err
+}
+
+func (m *metadataWAV) mergeID3(id3Meta *metadataID3v2) {
+	m.format = id3Meta.Format()
+	if t := id3Meta.Title(); t != "" {
+		m.title = t
+	}
+	if a := id3Meta.Artist(); a != "" {
+		m.artist = a
+	}
+	if a := id3Meta.Album(); a != "" {
+		m.album = a
+	}
+	if a := id3Meta.AlbumArtist(); a != "" {
+		m.albumArtist = a
+	}
+	if c := id3Meta.Composer(); c != "" {
+		m.composer = c
+	}
+	if y := id3Meta.Year(); y != 0 {
+		m.year = strconv.Itoa(y)
+	}
+	if g := id3Meta.Genre(); g != "" {
+		m.genre = g
+	}
+	if t, tt := id3Meta.Track(); t != 0 {
+		m.track = t
+		m.trackTotal = tt
+	}
+	if d, dt := id3Meta.Disc(); d != 0 {
+		m.disc = d
+		m.discTotal = dt
+	}
+	if p := id3Meta.Picture(); p != nil {
+		m.picture = p
+	}
+	if l := id3Meta.Lyrics(); l != "" {
+		m.lyrics = l
+	}
+	if c := id3Meta.Comment(); c != "" {
+		m.comment = c
+	}
+}
+
 func (m *metadataWAV) readFmtChunk(r io.ReadSeeker, chunkSize uint32) error {
 	// Read audio format (2 bytes) - should be 1 for PCM
 	audioFormat, err := readUint16LittleEndian(r)
 	if err != nil {
 		return err
 	}
-	
+
 	// Read number of channels (2 bytes)
 	m.channels, err = readUint16LittleEndian(r)
 	if err != nil {
@@ -219,6 +289,9 @@ func (m *metadataWAV) readFmtChunk(r io.ReadSeeker, chunkSize uint32) error {
 }
 
 func (m *metadataWAV) Format() Format {
+	if m.format != "" {
+		return m.format
+	}
 	return UnknownFormat // WAV files don't have a standard metadata format
 }
 
@@ -232,11 +305,9 @@ func (m *metadataWAV) Album() string { return m.album }
 
 func (m *metadataWAV) Artist() string { return m.artist }
 
-func (m *metadataWAV) AlbumArtist() string {
-	return ""
-}
+func (m *metadataWAV) AlbumArtist() string { return m.albumArtist }
 
-func (m *metadataWAV) Composer() string { return "" }
+func (m *metadataWAV) Composer() string { return m.composer }
 
 func (m *metadataWAV) Year() int {
 	if y, err := strconv.Atoi(m.year); err == nil {
@@ -248,27 +319,27 @@ func (m *metadataWAV) Year() int {
 func (m *metadataWAV) Genre() string { return m.genre }
 
 func (m *metadataWAV) Track() (int, int) {
-	return 0, 0
+	return m.track, m.trackTotal
 }
 
 func (m *metadataWAV) Disc() (int, int) {
-	return 0, 0
+	return m.disc, m.discTotal
 }
 
 func (m *metadataWAV) Picture() *Picture {
-	return nil
+	return m.picture
 }
 
-func (m *metadataWAV) Lyrics() string { return "" }
+func (m *metadataWAV) Lyrics() string { return m.lyrics }
 
 func (m *metadataWAV) Comment() string { return m.comment }
 
 func (m *metadataWAV) Raw() map[string]interface{} {
 	return map[string]interface{}{
-		"sample_rate":      m.sampleRate,
-		"bits_per_sample":  m.bitsPerSample,
-		"channels":         m.channels,
-		"data_size":        m.dataSize,
+		"sample_rate":     m.sampleRate,
+		"bits_per_sample": m.bitsPerSample,
+		"channels":        m.channels,
+		"data_size":       m.dataSize,
 	}
 }
 
