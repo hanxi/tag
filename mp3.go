@@ -311,7 +311,7 @@ func ReadV2MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 
 	header, audioStart, err := findFrameSync(r, int64(id3Size), size)
 	if err != nil {
-		return nil, err
+		return &metadataV2MP3{metadataID3v2: tagMeta}, nil
 	}
 
 	// FLAC 文件可以在 fLaC 头之前包含 ID3v2 标签，
@@ -354,7 +354,7 @@ func ReadV2MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 		// 使用 CBR 计算方法
 		duration, err = getMP3Duration(header, size-audioStart)
 		if err != nil {
-			return nil, fmt.Errorf("reading the mp3 duration: %w", err)
+			return &metadataV2MP3{metadataID3v2: tagMeta, sampleRate: sampleRate}, nil
 		}
 	}
 
@@ -413,14 +413,13 @@ func ReadV1MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 
 	_, err = r.Seek(0, io.SeekStart)
 	if err != nil {
-		return nil, fmt.Errorf("seeking to the start: %w", err)
-
+		return &metadataV1MP3{metadataID3v1: &tagMeta}, nil
 	}
 
 	header := make([]byte, 4)
 	_, err = io.ReadFull(r, header)
 	if err != nil {
-		return nil, fmt.Errorf("reading first frame header: %w", err)
+		return &metadataV1MP3{metadataID3v1: &tagMeta}, nil
 	}
 
 	// 解析 MP3 帧头信息
@@ -454,7 +453,7 @@ func ReadV1MP3Meta(r io.ReadSeeker, size int64) (Metadata, error) {
 		// 使用 CBR 计算方法
 		duration, err = getMP3Duration(header, size-128)
 		if err != nil {
-			return nil, fmt.Errorf("reading the mp3 duration: %w", err)
+			return &metadataV1MP3{metadataID3v1: &tagMeta, sampleRate: sampleRate}, nil
 		}
 	}
 

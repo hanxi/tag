@@ -57,7 +57,7 @@ func ReadFrom(r io.ReadSeeker) (Metadata, error) {
 		}
 		return ReadV2MP3Meta(r, size)
 
-	case b[0] == 0xff && (b[1] == 0xfb || b[2] == 0xf3 || b[3] == 0xf2):
+	case b[0] == 0xff && (b[1]&0xe0) == 0xe0:
 		size, err := getFileSize(r)
 		if err != nil {
 			return nil, fmt.Errorf("could not get file size: %w", err)

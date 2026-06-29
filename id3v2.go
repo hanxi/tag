@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -337,66 +338,43 @@ func readID3v2Frames(r io.Reader, offset uint, h *id3v2Header) (map[string]inter
 			}
 		}
 
+		var frameVal interface{}
+		var frameErr error
+
 		switch {
 		case name == "TXXX" || name == "TXX":
-			t, err := readTextWithDescrFrame(b, false, true) // no lang, but enc
-			if err != nil {
-				return nil, err
-			}
-			result[rawName] = t
+			frameVal, frameErr = readTextWithDescrFrame(b, false, true) // no lang, but enc
 
 		case name[0] == 'T':
-			txt, err := readTFrame(b)
-			if err != nil {
-				return nil, err
-			}
-			result[rawName] = txt
+			frameVal, frameErr = readTFrame(b)
 
 		case name == "UFID" || name == "UFI":
-			t, err := readUFID(b)
-			if err != nil {
-				return nil, err
-			}
-			result[rawName] = t
+			frameVal, frameErr = readUFID(b)
 
 		case name == "WXXX" || name == "WXX":
-			t, err := readTextWithDescrFrame(b, false, false) // no lang, no enc
-			if err != nil {
-				return nil, err
-			}
-			result[rawName] = t
+			frameVal, frameErr = readTextWithDescrFrame(b, false, false) // no lang, no enc
 
 		case name[0] == 'W':
-			txt, err := readWFrame(b)
-			if err != nil {
-				return nil, err
-			}
-			result[rawName] = txt
+			frameVal, frameErr = readWFrame(b)
 
 		case name == "COMM" || name == "COM" || name == "USLT" || name == "ULT":
-			t, err := readTextWithDescrFrame(b, true, true) // both lang and enc
-			if err != nil {
-				return nil, fmt.Errorf("could not read %q (%q): %v", name, rawName, err)
-			}
-			result[rawName] = t
+			frameVal, frameErr = readTextWithDescrFrame(b, true, true) // both lang and enc
 
 		case name == "APIC":
-			p, err := readAPICFrame(b)
-			if err != nil {
-				return nil, err
-			}
-			result[rawName] = p
+			frameVal, frameErr = readAPICFrame(b)
 
 		case name == "PIC":
-			p, err := readPICFrame(b)
-			if err != nil {
-				return nil, err
-			}
-			result[rawName] = p
+			frameVal, frameErr = readPICFrame(b)
 
 		default:
-			result[rawName] = b
+			frameVal = b
 		}
+
+		if frameErr != nil {
+			slog.Warn("skipping corrupt ID3v2 frame", "frame", name, "error", frameErr)
+			continue
+		}
+		result[rawName] = frameVal
 	}
 	return result, nil
 }
