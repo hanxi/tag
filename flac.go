@@ -5,9 +5,11 @@
 package tag
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -55,11 +57,14 @@ func ReadFLACMeta(r io.ReadSeeker) (Metadata, error) {
 
 type metadataFLAC struct {
 	*metadataVorbis
-	duration      time.Duration
-	sampleRate    int // Hz
-	channels      int
-	bitsPerSample int
+	duration       time.Duration
+	sampleRate     int // Hz
+	channels       int
+	bitsPerSample  int
+	cueSheetBlock  *CUESheetData
 }
+
+const cueSheetBlockType blockType = 5
 
 func (m *metadataFLAC) readFLACBlock(r io.ReadSeeker) (last bool, err error) {
 	blockHeader, err := readBytes(r, 1)
@@ -86,6 +91,13 @@ func (m *metadataFLAC) readFLACBlock(r io.ReadSeeker) (last bool, err error) {
 
 	case streamInfoBlock:
 		err = m.readStreamingInfoBlock(r, blockLen)
+
+	case cueSheetBlockType:
+		cueData := make([]byte, blockLen)
+		if _, err = io.ReadFull(r, cueData); err != nil {
+			return
+		}
+		m.cueSheetBlock = parseFLACCueSheetBlockRaw(cueData)
 
 	default:
 		_, err = r.Seek(int64(blockLen), io.SeekCurrent)
@@ -136,6 +148,71 @@ func (m *metadataFLAC) Duration() time.Duration {
 
 func (m *metadataFLAC) SampleRate() int {
 	return m.sampleRate
+}
+
+func (m *metadataFLAC) CUESheetBlock() *CUESheetData {
+	return m.cueSheetBlock
+}
+
+// parseFLACCueSheetBlockRaw 解析 FLAC CUESHEET metadata block 的二进制数据。
+// 参考 FLAC specification: https://xiph.org/flac/format.html#metadata_block_cuesheet
+func parseFLACCueSheetBlockRaw(data []byte) *CUESheetData {
+	// 最小长度：128 (catalog) + 8 (lead-in) + 1 (flags) + 258 (reserved) + 1 (num_tracks) = 396
+	if len(data) < 396 {
+		return nil
+	}
+
+	numTracks := int(data[395])
+	if numTracks == 0 {
+		return nil
+	}
+
+	result := &CUESheetData{}
+	pos := 396
+
+	for range numTracks {
+		if pos+36 > len(data) {
+			break
+		}
+
+		offsetSample := binary.BigEndian.Uint64(data[pos : pos+8])
+		trackNumber := int(data[pos+8])
+		isrc := strings.TrimRight(string(data[pos+9:pos+21]), "\x00")
+		isAudio := (data[pos+21] & 0x80) == 0
+		numIndexPoints := int(data[pos+35])
+		pos += 36
+
+		var indexPoints []CUESheetIndex
+		for range numIndexPoints {
+			if pos+12 > len(data) {
+				break
+			}
+			idxOffset := binary.BigEndian.Uint64(data[pos : pos+8])
+			idxNumber := int(data[pos+8])
+			indexPoints = append(indexPoints, CUESheetIndex{
+				OffsetSample: idxOffset,
+				Number:       idxNumber,
+			})
+			pos += 12
+		}
+
+		// track 170 (0xAA) 是 lead-out
+		if trackNumber == 170 || !isAudio {
+			continue
+		}
+
+		result.Tracks = append(result.Tracks, CUESheetTrack{
+			Number:       trackNumber,
+			OffsetSample: offsetSample,
+			ISRC:         isrc,
+			IndexPoints:  indexPoints,
+		})
+	}
+
+	if len(result.Tracks) == 0 {
+		return nil
+	}
+	return result
 }
 
 // BitRate 返回 FLAC 的平均 bitrate(kbps)。streaminfo 不直接给 bitrate,

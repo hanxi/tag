@@ -193,3 +193,29 @@ type Metadata interface {
 	// SampleRate returns the audio sampling rate in Hz, or 0 if not available.
 	SampleRate() int
 }
+
+// CUESheetTrack 表示 FLAC CUESHEET block 中的一个 track
+type CUESheetTrack struct {
+	Number       int
+	OffsetSample uint64
+	ISRC         string
+	IndexPoints  []CUESheetIndex
+}
+
+// CUESheetIndex 表示 track 中的一个 index point
+type CUESheetIndex struct {
+	OffsetSample uint64
+	Number       int
+}
+
+// CUESheetData 表示 FLAC 内嵌 CUESHEET block 的解析结果
+type CUESheetData struct {
+	Tracks []CUESheetTrack
+}
+
+// CUESheetProvider 是一个可选接口，支持返回 FLAC 内嵌 CUESHEET。
+// 目前仅 FLAC 实现，其他格式不实现此接口。
+// 使用方式：if p, ok := metadata.(tag.CUESheetProvider); ok { data := p.CUESheetBlock() }
+type CUESheetProvider interface {
+	CUESheetBlock() *CUESheetData
+}
