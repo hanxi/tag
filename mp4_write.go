@@ -285,6 +285,10 @@ func buildMP4Ilst(opts WriteOptions) []byte {
 	writeText("\xa9gen", opts.Genre)
 	writeText("\xa9lyr", opts.Lyrics)
 
+	if trkn := buildMP4TrackAtom(opts.Track); trkn != nil {
+		body.Write(trkn)
+	}
+
 	if opts.Picture != nil && len(opts.Picture.Data) > 0 {
 		body.Write(buildMP4PictureAtom(opts.Picture))
 	}
@@ -301,6 +305,28 @@ func buildMP4TextAtom(name, value string) []byte {
 	copy(dataPayload[8:], value)
 	dataAtom := buildAtom("data", dataPayload)
 	return buildAtom(name, dataAtom)
+}
+
+// buildMP4TrackAtom 构建 trkn atom（二进制 data atom，class=0/implicit）。
+// body 布局：[2 reserved][2 track number][2 total tracks][2 reserved]，大端。
+// opts.Track 为空或无有效轨号时返回 nil（不写 trkn）。
+func buildMP4TrackAtom(track string) []byte {
+	numStr, totalStr := splitTrack(track)
+	num, _ := strconv.Atoi(numStr)
+	if num <= 0 {
+		return nil
+	}
+	total, _ := strconv.Atoi(totalStr)
+
+	trkn := make([]byte, 8)
+	binary.BigEndian.PutUint16(trkn[2:4], uint16(num))
+	binary.BigEndian.PutUint16(trkn[4:6], uint16(total))
+
+	dataPayload := make([]byte, 8+len(trkn))
+	// class = 0 (implicit/binary), locale = 0
+	copy(dataPayload[8:], trkn)
+	dataAtom := buildAtom("data", dataPayload)
+	return buildAtom("trkn", dataAtom)
 }
 
 // buildMP4PictureAtom 构建 covr atom
@@ -375,4 +401,3 @@ func adjustCO64Atom(body []byte, delta int64) {
 		binary.BigEndian.PutUint64(body[off:off+8], uint64(old+delta))
 	}
 }
-

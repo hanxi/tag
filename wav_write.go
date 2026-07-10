@@ -202,6 +202,9 @@ func buildWAVLISTInfo(opts WriteOptions) []byte {
 	if opts.Genre != "" {
 		tags = append(tags, wavTag{"IGNR", opts.Genre})
 	}
+	if opts.Track != "" {
+		tags = append(tags, wavTag{"ITRK", opts.Track})
+	}
 	if opts.Lyrics != "" {
 		tags = append(tags, wavTag{"ICMT", opts.Lyrics})
 	}

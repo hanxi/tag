@@ -28,7 +28,22 @@ type WriteOptions struct {
 	Year        int
 	Genre       string
 	Lyrics      string   // UTF-8 lyrics; embedded as USLT (MP3) / LYRICS or unsynced lyrics (others)
+	Track       string   // Track number, "3" or "3/12" (number/total); empty skips the field
 	Picture     *Picture // Cover art (MIMEType + Data required; Description optional)
+}
+
+// splitTrack 拆分音轨号字符串为 (number, total)。
+// 支持 "3"（仅轨号）与 "3/12"（轨号/总数）两种形态；两侧空白被裁剪。
+// number 为空表示未提供音轨号。
+func splitTrack(s string) (number, total string) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", ""
+	}
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		return strings.TrimSpace(s[:i]), strings.TrimSpace(s[i+1:])
+	}
+	return s, ""
 }
 
 // WriteTag writes the supplied metadata into the music file at filePath.

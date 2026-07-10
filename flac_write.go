@@ -216,6 +216,13 @@ func buildFLACVorbisComment(opts WriteOptions) []byte {
 	if opts.Lyrics != "" {
 		comments = append(comments, "LYRICS="+opts.Lyrics)
 	}
+	// Vorbis 约定拆成 TRACKNUMBER / TRACKTOTAL 两个字段（阅读器分别解析）
+	if trackNum, trackTotal := splitTrack(opts.Track); trackNum != "" {
+		comments = append(comments, "TRACKNUMBER="+trackNum)
+		if trackTotal != "" {
+			comments = append(comments, "TRACKTOTAL="+trackTotal)
+		}
+	}
 
 	binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(comments)))
 	buf.Write(lenBuf[:])

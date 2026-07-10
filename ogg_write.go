@@ -298,6 +298,12 @@ func collectVorbisComments(opts WriteOptions) []string {
 	if opts.Lyrics != "" {
 		comments = append(comments, "LYRICS="+opts.Lyrics)
 	}
+	if trackNum, trackTotal := splitTrack(opts.Track); trackNum != "" {
+		comments = append(comments, "TRACKNUMBER="+trackNum)
+		if trackTotal != "" {
+			comments = append(comments, "TRACKTOTAL="+trackTotal)
+		}
+	}
 	return comments
 }
 

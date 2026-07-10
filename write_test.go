@@ -522,3 +522,39 @@ func TestWriteAPE_OverwriteExistingTag(t *testing.T) {
 		t.Errorf("Lyrics: got %q, want %q", got, opts2.Lyrics)
 	}
 }
+
+// TestWriteTrack_RoundTrip 验证各格式写入音轨号后能被 ReadFrom 正确读回。
+func TestWriteTrack_RoundTrip(t *testing.T) {
+	cases := []struct {
+		name      string
+		fixture   string
+		track     string
+		wantNum   int
+		wantTotal int
+	}{
+		{"mp3_num_total", "testdata/without_tags/sample.mp3", "3/12", 3, 12},
+		{"mp3_num_only", "testdata/without_tags/sample.mp3", "5", 5, 0},
+		{"flac_num_total", "testdata/without_tags/sample.flac", "7/20", 7, 20},
+		{"flac_num_only", "testdata/without_tags/sample.flac", "9", 9, 0},
+		{"mp4_num_total", "testdata/without_tags/sample.m4a", "4/10", 4, 10},
+		{"mp4_num_only", "testdata/without_tags/sample.mp4", "6", 6, 0},
+		{"ogg_num_total", "testdata/without_tags/sample.ogg", "2/8", 2, 8},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := copyFixture(t, tc.fixture)
+			opts := WriteOptions{Title: "T", Artist: "A", Track: tc.track}
+			if err := WriteTag(path, opts); err != nil {
+				t.Fatalf("WriteTag: %v", err)
+			}
+			m := readBackMetadata(t, path)
+			num, total := m.Track()
+			if num != tc.wantNum {
+				t.Errorf("track number: got %d, want %d", num, tc.wantNum)
+			}
+			if total != tc.wantTotal {
+				t.Errorf("track total: got %d, want %d", total, tc.wantTotal)
+			}
+		})
+	}
+}
