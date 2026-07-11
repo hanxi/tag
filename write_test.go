@@ -36,6 +36,30 @@ func copyFixture(t *testing.T, fixture string) string {
 	return dst.Name()
 }
 
+// copyFixtureAs 与 copyFixture 相同,但用指定扩展名落地临时文件,
+// 用于验证 WriteTag 按扩展名 dispatch 的分支(如 mov 复用 m4a 容器字节)。
+func copyFixtureAs(t *testing.T, fixture, ext string) string {
+	t.Helper()
+	src, err := os.Open(fixture)
+	if err != nil {
+		t.Fatalf("open fixture: %v", err)
+	}
+	defer src.Close()
+
+	dst, err := os.CreateTemp(t.TempDir(), "tag-write-*"+ext)
+	if err != nil {
+		t.Fatalf("create temp: %v", err)
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		dst.Close()
+		t.Fatalf("copy: %v", err)
+	}
+	if err := dst.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	return dst.Name()
+}
+
 // readBackMetadata 用 ReadFrom 读回写入后的 metadata
 func readBackMetadata(t *testing.T, path string) Metadata {
 	t.Helper()
@@ -258,6 +282,49 @@ func TestWriteMP4_RoundTrip_NoExistingTag(t *testing.T) {
 	}
 	if got := m.Genre(); got != opts.Genre {
 		t.Errorf("Genre: got %q, want %q", got, opts.Genre)
+	}
+	if got := m.Lyrics(); got != opts.Lyrics {
+		t.Errorf("Lyrics: got %q, want %q", got, opts.Lyrics)
+	}
+	if pic := m.Picture(); pic == nil {
+		t.Error("Picture: got nil, want non-nil")
+	} else if string(pic.Data) != string(opts.Picture.Data) {
+		t.Errorf("Picture data mismatch: got %d bytes, want %d bytes", len(pic.Data), len(opts.Picture.Data))
+	}
+}
+
+// TestWriteMP4_RoundTrip_MovExtension 验证 .mov(QuickTime/ISO-BMFF 同族容器)
+// 走 WriteMP4 分支并能完整 round-trip,覆盖 bilibili 等下载源产出的 mov 场景。
+func TestWriteMP4_RoundTrip_MovExtension(t *testing.T) {
+	path := copyFixtureAs(t, "testdata/without_tags/sample.m4a", ".mov")
+
+	opts := WriteOptions{
+		Title:  "MOV Title",
+		Artist: "MOV Artist",
+		Album:  "MOV Album",
+		Year:   2026,
+		Lyrics: "MOV Lyrics\n第二行",
+		Picture: &Picture{
+			MIMEType: "image/jpeg",
+			Data:     []byte{0xff, 0xd8, 0xff, 0xe0, 0xde, 0xad, 0xbe, 0xef},
+		},
+	}
+	if err := WriteTag(path, opts); err != nil {
+		t.Fatalf("WriteTag: %v", err)
+	}
+
+	m := readBackMetadata(t, path)
+	if got := m.Title(); got != opts.Title {
+		t.Errorf("Title: got %q, want %q", got, opts.Title)
+	}
+	if got := m.Artist(); got != opts.Artist {
+		t.Errorf("Artist: got %q, want %q", got, opts.Artist)
+	}
+	if got := m.Album(); got != opts.Album {
+		t.Errorf("Album: got %q, want %q", got, opts.Album)
+	}
+	if got := m.Year(); got != opts.Year {
+		t.Errorf("Year: got %d, want %d", got, opts.Year)
 	}
 	if got := m.Lyrics(); got != opts.Lyrics {
 		t.Errorf("Lyrics: got %q, want %q", got, opts.Lyrics)

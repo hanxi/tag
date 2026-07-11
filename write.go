@@ -51,9 +51,9 @@ func splitTrack(s string) (number, total string) {
 // The format is selected by file extension. Supported formats and their tag mappings:
 //
 //	Format          | Text fields              | Lyrics      | Picture
-//	.mp3            | ID3v2.3 text frames      | USLT        | APIC
-//	.flac           | Vorbis Comment           | LYRICS      | PICTURE block
-//	.m4a/.mp4/.m4b  | iTunes atoms (©nam etc)  | ©lyr        | covr
+//	.mp3                | ID3v2.3 text frames      | USLT        | APIC
+//	.flac               | Vorbis Comment           | LYRICS      | PICTURE block
+//	.m4a/.mp4/.m4b/.mov | iTunes atoms (©nam etc)  | ©lyr        | covr
 //	.ogg/.oga       | Vorbis Comment           | LYRICS      | METADATA_BLOCK_PICTURE
 //	.ape            | APEv2 items              | Lyrics      | Cover Art (Front) (binary)
 //	.wav            | RIFF LIST INFO           | ICMT        | (not supported)
@@ -71,7 +71,11 @@ func WriteTag(filePath string, opts WriteOptions) error {
 		return WriteAPE(filePath, opts)
 	case ".wav":
 		return WriteWAV(filePath, opts)
-	case ".m4a", ".mp4", ".m4b":
+	case ".m4a", ".mp4", ".m4b", ".mov":
+		// .mov 是 QuickTime/ISO-BMFF 容器,与 MP4 同族,共用 moov>udta>meta>ilst
+		// iTunes atoms。ffmpeg 产出的 mov(如 bilibili 下载源)符合此布局。
+		// 注:老式纯 QuickTime mov 的 meta atom 不带 version/flags 前缀,WriteMP4
+		// 按 iTunes MP4 规范写(带前缀),此类文件不在支持范围。
 		return WriteMP4(filePath, opts)
 	case ".ogg", ".oga":
 		return WriteOGG(filePath, opts)
