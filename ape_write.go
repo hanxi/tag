@@ -108,6 +108,12 @@ func buildAPEv2Items(opts WriteOptions) ([]byte, uint32) {
 	if opts.Genre != "" {
 		entries = append(entries, item{"Genre", opts.Genre})
 	}
+	if opts.Language != "" {
+		entries = append(entries, item{"Language", opts.Language})
+	}
+	if opts.Style != "" {
+		entries = append(entries, item{"Style", opts.Style})
+	}
 	if opts.Track != "" {
 		entries = append(entries, item{"Track", opts.Track})
 	}

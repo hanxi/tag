@@ -213,6 +213,12 @@ func buildFLACVorbisComment(opts WriteOptions) []byte {
 	if opts.Genre != "" {
 		comments = append(comments, "GENRE="+opts.Genre)
 	}
+	if opts.Language != "" {
+		comments = append(comments, "LANGUAGE="+opts.Language)
+	}
+	if opts.Style != "" {
+		comments = append(comments, "STYLE="+opts.Style)
+	}
 	if opts.Lyrics != "" {
 		comments = append(comments, "LYRICS="+opts.Lyrics)
 	}

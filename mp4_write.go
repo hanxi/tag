@@ -283,6 +283,12 @@ func buildMP4Ilst(opts WriteOptions) []byte {
 		writeText("\xa9day", strconv.Itoa(opts.Year))
 	}
 	writeText("\xa9gen", opts.Genre)
+	if opts.Language != "" {
+		body.Write(buildMP4FreeformAtom("LANGUAGE", opts.Language))
+	}
+	if opts.Style != "" {
+		body.Write(buildMP4FreeformAtom("STYLE", opts.Style))
+	}
 	writeText("\xa9lyr", opts.Lyrics)
 
 	if trkn := buildMP4TrackAtom(opts.Track); trkn != nil {
@@ -305,6 +311,37 @@ func buildMP4TextAtom(name, value string) []byte {
 	copy(dataPayload[8:], value)
 	dataAtom := buildAtom("data", dataPayload)
 	return buildAtom(name, dataAtom)
+}
+
+// buildMP4FreeformAtom 构建 iTunes 风格的 freeform ("----") atom，用于无标准
+// atom 的字段（如 LANGUAGE / STYLE）。
+//
+// 布局:
+//
+//	"----" atom
+//	  "mean" atom: [size]["mean"][4 version+flags=0]["com.apple.iTunes"]
+//	  "name" atom: [size]["name"][4 version+flags=0][name]
+//	  "data" atom: [size]["data"][4 class=1(text)][4 locale=0][value]
+func buildMP4FreeformAtom(name, value string) []byte {
+	meanBody := make([]byte, 4+len("com.apple.iTunes"))
+	copy(meanBody[4:], "com.apple.iTunes")
+	mean := buildAtom("mean", meanBody)
+
+	nameBody := make([]byte, 4+len(name))
+	copy(nameBody[4:], name)
+	nameAtom := buildAtom("name", nameBody)
+
+	dataPayload := make([]byte, 8+len(value))
+	binary.BigEndian.PutUint32(dataPayload[0:4], 1) // class = text
+	// dataPayload[4:8] = 0 (locale)
+	copy(dataPayload[8:], value)
+	dataAtom := buildAtom("data", dataPayload)
+
+	var body bytes.Buffer
+	body.Write(mean)
+	body.Write(nameAtom)
+	body.Write(dataAtom)
+	return buildAtom("----", body.Bytes())
 }
 
 // buildMP4TrackAtom 构建 trkn atom（二进制 data atom，class=0/implicit）。

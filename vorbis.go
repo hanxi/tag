@@ -209,6 +209,14 @@ func (m *metadataVorbis) Genre() string {
 	return m.c["genre"]
 }
 
+func (m *metadataVorbis) Language() string {
+	return m.c["language"]
+}
+
+func (m *metadataVorbis) Style() string {
+	return m.c["style"]
+}
+
 func (m *metadataVorbis) Year() int {
 	var dateFormat string
 

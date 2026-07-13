@@ -284,9 +284,15 @@ func readCustomAtom(r io.ReadSeeker, size uint32) (_ string, data []string, _ er
 		}
 		switch subName {
 		case "mean", "name":
+			// mean/name atom body: [1 version][3 flags][value]
 			subNames[subName] = string(b[4:])
 		case "data":
-			data = append(data, string(b[4:]))
+			// data atom body: [1 version][3 flags/class][4 locale][value].
+			// Skip version+flags(4) AND the 4-byte locale/reserved field so the
+			// raw value is returned without a leading 4-null-byte prefix.
+			if len(b) >= 8 {
+				data = append(data, string(b[8:]))
+			}
 		}
 	}
 
@@ -348,6 +354,17 @@ func (m metadataMP4) Composer() string {
 
 func (m metadataMP4) Genre() string {
 	return m.getString(atoms.Name("genre"))
+}
+
+// Language / Style have no standard iTunes atom, so they are stored as freeform
+// ("----") atoms under com.apple.iTunes. readCustomAtom stores the value under
+// the freeform "name" sub-atom value (e.g. "LANGUAGE"/"STYLE").
+func (m metadataMP4) Language() string {
+	return m.getString([]string{"LANGUAGE", "language"})
+}
+
+func (m metadataMP4) Style() string {
+	return m.getString([]string{"STYLE", "style"})
 }
 
 func (m metadataMP4) Year() int {

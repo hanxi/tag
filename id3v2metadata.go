@@ -42,6 +42,7 @@ var frames = frameNames(map[string][2]string{
 	"track":        [2]string{"TRK", "TRCK"},
 	"disc":         [2]string{"TPA", "TPOS"},
 	"genre":        [2]string{"TCO", "TCON"},
+	"language":     [2]string{"TLA", "TLAN"},
 	"picture":      [2]string{"PIC", "APIC"},
 	"lyrics":       [2]string{"", "USLT"},
 	"comment":      [2]string{"COM", "COMM"},
@@ -87,6 +88,31 @@ func (m metadataID3v2) Composer() string {
 
 func (m metadataID3v2) Genre() string {
 	return id3v2genre(m.getString(frames.Name("genre", m.Format())))
+}
+
+// Language returns the standard TLAN text frame value.
+func (m metadataID3v2) Language() string {
+	return m.getString(frames.Name("language", m.Format()))
+}
+
+// Style is read from a TXXX (user-defined text) frame whose description is
+// "STYLE" (case-insensitive). ID3v2 has no standard frame for style/sub-genre,
+// so this mirrors the convention used by the WriteID3v2 writer. Returns "" if
+// no matching TXXX frame is present.
+func (m metadataID3v2) Style() string {
+	for k, v := range m.frames {
+		if !strings.HasPrefix(k, "TXXX") && !strings.HasPrefix(k, "TXX") {
+			continue
+		}
+		c, ok := v.(*Comm)
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(c.Description, "STYLE") {
+			return c.Text
+		}
+	}
+	return ""
 }
 
 func (m metadataID3v2) Year() int {

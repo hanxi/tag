@@ -591,6 +591,73 @@ func TestWriteAPE_OverwriteExistingTag(t *testing.T) {
 }
 
 // TestWriteTrack_RoundTrip 验证各格式写入音轨号后能被 ReadFrom 正确读回。
+// TestWriteLanguageStyle_RoundTrip 验证 Language / Style 字段在写入后可原样读回。
+// 覆盖全部做全读写闭环的格式:MP3(TLAN + TXXX:STYLE)、FLAC/OGG(Vorbis LANGUAGE/STYLE)、
+// APE(APEv2 Language/Style item)、MP4(freeform ----:com.apple.iTunes:LANGUAGE/STYLE)、
+// AIFF(内嵌 ID3v2 chunk,与 MP3 同路径)。WAV / ID3v1 无标准字段,返回空,不在此断言。
+func TestWriteLanguageStyle_RoundTrip(t *testing.T) {
+	const wantLang = "Chinese"
+	const wantStyle = "City Pop"
+
+	cases := []struct {
+		name   string
+		mkPath func(t *testing.T) string
+	}{
+		{"mp3", func(t *testing.T) string { return copyFixture(t, "testdata/without_tags/sample.mp3") }},
+		{"flac", func(t *testing.T) string { return copyFixture(t, "testdata/without_tags/sample.flac") }},
+		{"ogg", func(t *testing.T) string { return copyFixture(t, "testdata/without_tags/sample.ogg") }},
+		{"mp4", func(t *testing.T) string { return copyFixture(t, "testdata/without_tags/sample.m4a") }},
+		{"ape", createMinimalAPE},
+		{"aiff", createTestAIFFFile},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := tc.mkPath(t)
+			opts := WriteOptions{
+				Title:    "LS Title",
+				Artist:   "LS Artist",
+				Language: wantLang,
+				Style:    wantStyle,
+			}
+			if err := WriteTag(path, opts); err != nil {
+				t.Fatalf("WriteTag: %v", err)
+			}
+			m := readBackMetadata(t, path)
+			if got := m.Language(); got != wantLang {
+				t.Errorf("Language: got %q, want %q", got, wantLang)
+			}
+			if got := m.Style(); got != wantStyle {
+				t.Errorf("Style: got %q, want %q", got, wantStyle)
+			}
+			// 确保未破坏既有字段
+			if got := m.Title(); got != opts.Title {
+				t.Errorf("Title: got %q, want %q", got, opts.Title)
+			}
+		})
+	}
+}
+
+// TestWriteLanguageStyle_EmptySkips 验证空字符串字段被跳过(不写入),
+// 读回为空,且不影响其他字段。以 FLAC 为代表。
+func TestWriteLanguageStyle_EmptySkips(t *testing.T) {
+	path := copyFixture(t, "testdata/without_tags/sample.flac")
+	opts := WriteOptions{Title: "T", Genre: "Rock"} // Language/Style 留空
+	if err := WriteTag(path, opts); err != nil {
+		t.Fatalf("WriteTag: %v", err)
+	}
+	m := readBackMetadata(t, path)
+	if got := m.Language(); got != "" {
+		t.Errorf("Language: got %q, want empty", got)
+	}
+	if got := m.Style(); got != "" {
+		t.Errorf("Style: got %q, want empty", got)
+	}
+	if got := m.Genre(); got != "Rock" {
+		t.Errorf("Genre: got %q, want %q", got, "Rock")
+	}
+}
+
 func TestWriteTrack_RoundTrip(t *testing.T) {
 	cases := []struct {
 		name      string

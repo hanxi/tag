@@ -165,6 +165,12 @@ type Metadata interface {
 	// Genre returns the genre of the track.
 	Genre() string
 
+	// Language returns the language of the track, or empty string if unavailable.
+	Language() string
+
+	// Style returns the style/sub-genre of the track, or empty string if unavailable.
+	Style() string
+
 	// Track returns the track number and total tracks, or zero values if unavailable.
 	Track() (int, int)
 

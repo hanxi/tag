@@ -245,6 +245,10 @@ func ReadAPEMeta(r io.ReadSeeker) (Metadata, error) {
 			}
 		case "genre":
 			m.genre = valueStr
+		case "language":
+			m.language = valueStr
+		case "style":
+			m.style = valueStr
 		case "lyrics":
 			m.lyrics = valueStr
 		case "comment":
@@ -262,6 +266,8 @@ type metadataAPE struct {
 	album         string
 	year          int
 	genre         string
+	language      string
+	style         string
 	lyrics        string
 	comment       string
 	picture       *Picture
@@ -281,6 +287,8 @@ func (m *metadataAPE) AlbumArtist() string    { return m.albumArtist }
 func (m *metadataAPE) Composer() string       { return "" }
 func (m *metadataAPE) Year() int              { return m.year }
 func (m *metadataAPE) Genre() string          { return m.genre }
+func (m *metadataAPE) Language() string       { return m.language }
+func (m *metadataAPE) Style() string          { return m.style }
 func (m *metadataAPE) Track() (int, int)      { return 0, 0 }
 func (m *metadataAPE) Disc() (int, int)       { return 0, 0 }
 func (m *metadataAPE) Picture() *Picture      { return m.picture }

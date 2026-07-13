@@ -318,6 +318,10 @@ func (m *metadataWAV) Year() int {
 
 func (m *metadataWAV) Genre() string { return m.genre }
 
+// RIFF INFO has no standard language/style key, so these are always empty.
+func (m *metadataWAV) Language() string { return "" }
+func (m *metadataWAV) Style() string    { return "" }
+
 func (m *metadataWAV) Track() (int, int) {
 	return m.track, m.trackTotal
 }

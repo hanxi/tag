@@ -136,6 +136,11 @@ func buildID3v2Frames(opts WriteOptions) ([]byte, error) {
 		appendText("TYER", strconv.Itoa(opts.Year))
 	}
 	appendText("TCON", opts.Genre)
+	appendText("TLAN", opts.Language)
+	// Style 无标准帧，写成 description="STYLE" 的 TXXX 用户自定义帧
+	if opts.Style != "" {
+		writeTXXXFrame(&buf, "STYLE", opts.Style)
+	}
 	// TRCK 直接写 "3" 或 "3/12"（ID3 阅读器按 x/n 解析）
 	appendText("TRCK", opts.Track)
 
@@ -156,6 +161,17 @@ func writeTextFrame(buf *bytes.Buffer, id, value string) {
 	payload = append(payload, 0x03) // UTF-8
 	payload = append(payload, []byte(value)...)
 	writeID3v2Frame(buf, id, payload)
+}
+
+// writeTXXXFrame writes a user-defined text information frame (TXXX).
+// Layout: [4 ID="TXXX"][4 size BE][2 flags][1 enc=0x03][desc UTF-8][NUL][value UTF-8]
+func writeTXXXFrame(buf *bytes.Buffer, desc, value string) {
+	var payload bytes.Buffer
+	payload.WriteByte(0x03) // UTF-8
+	payload.WriteString(desc)
+	payload.WriteByte(0x00) // description terminator
+	payload.WriteString(value)
+	writeID3v2Frame(buf, "TXXX", payload.Bytes())
 }
 
 // writeUSLTFrame writes an Unsynchronised Lyrics frame.

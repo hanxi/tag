@@ -127,6 +127,8 @@ type metadataAIFF struct {
 	composer        string
 	year            int
 	genre           string
+	language        string
+	style           string
 	track           int
 	trackTotal      int
 	disc            int
@@ -208,6 +210,12 @@ func (m *metadataAIFF) readID3Chunk(r io.ReadSeeker, chunkSize uint32) error {
 	if g := id3Meta.Genre(); g != "" {
 		m.genre = g
 	}
+	if l := id3Meta.Language(); l != "" {
+		m.language = l
+	}
+	if s := id3Meta.Style(); s != "" {
+		m.style = s
+	}
 	if t, tt := id3Meta.Track(); t != 0 {
 		m.track = t
 		m.trackTotal = tt
@@ -269,6 +277,8 @@ func (m *metadataAIFF) AlbumArtist() string { return m.albumArtist }
 func (m *metadataAIFF) Composer() string    { return m.composer }
 func (m *metadataAIFF) Year() int           { return m.year }
 func (m *metadataAIFF) Genre() string       { return m.genre }
+func (m *metadataAIFF) Language() string    { return m.language }
+func (m *metadataAIFF) Style() string       { return m.style }
 func (m *metadataAIFF) Track() (int, int)   { return m.track, m.trackTotal }
 func (m *metadataAIFF) Disc() (int, int)    { return m.disc, m.discTotal }
 func (m *metadataAIFF) Picture() *Picture   { return m.picture }

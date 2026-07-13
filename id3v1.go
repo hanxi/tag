@@ -139,6 +139,10 @@ func (m metadataID3v1) Album() string  { return m["album"].(string) }
 func (m metadataID3v1) Artist() string { return m["artist"].(string) }
 func (m metadataID3v1) Genre() string  { return m["genre"].(string) }
 
+// ID3v1 has no language or style field.
+func (m metadataID3v1) Language() string { return "" }
+func (m metadataID3v1) Style() string    { return "" }
+
 func (m metadataID3v1) Year() int {
 	y := m["year"].(string)
 	n, err := strconv.Atoi(y)
