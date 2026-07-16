@@ -169,8 +169,13 @@ func rebuildUdta(udtaBody []byte, newIlst []byte) ([]byte, error) {
 		return append(udtaBody, meta...), nil
 	}
 
-	// meta atom 有 4 字节 version+flags，子 atom 从 offset+12 开始
-	metaBody := udtaBody[metaOff+12 : metaOff+metaSize]
+	// meta atom 的头部长度：标准 MP4/iTunes 是 FullBox（8 字节 header + 4 字节
+	// version+flags，子 atom 从 +12 起）；老式纯 QuickTime 的 meta 不带 version+flags，
+	// 子 atom 紧跟 header 从 +8 起（bilibili 等下载源可能产出此布局，旧代码写死 +12
+	// 会错位 4 字节导致解析出错乱的 ilst、写标签失败）。按实际布局定位既有子 atom，
+	// 再统一写回标准 FullBox 布局（buildAtomWithMeta），使产出文件对读侧/播放器最大兼容。
+	hdrLen := mp4MetaHeaderLen(udtaBody, metaOff, metaSize)
+	metaBody := udtaBody[metaOff+hdrLen : metaOff+metaSize]
 	newMetaBody, err := rebuildMeta(metaBody, newIlst)
 	if err != nil {
 		return nil, err
@@ -182,6 +187,26 @@ func rebuildUdta(udtaBody []byte, newIlst []byte) ([]byte, error) {
 	result = append(result, newMeta...)
 	result = append(result, udtaBody[metaOff+metaSize:]...)
 	return result, nil
+}
+
+// mp4MetaHeaderLen 判定 meta atom 的头部长度（相对 metaOff），返回 8 或 12。
+// meta 的首个子 atom 规范上恒为 hdlr：FullBox 布局下其名出现在 metaOff+16，
+// bare QuickTime 布局下出现在 metaOff+12。据此消歧；仅在明确命中 bare 位置且
+// 未命中 full 位置时判为 bare(8)，否则一律回退标准 full(12)，保证零回归。
+func mp4MetaHeaderLen(body []byte, metaOff, metaSize int) int {
+	end := metaOff + metaSize
+	nameEq := func(pos int, want string) bool {
+		if pos < 0 || pos+4 > end || pos+4 > len(body) {
+			return false
+		}
+		return string(body[pos:pos+4]) == want
+	}
+	bareHdlr := nameEq(metaOff+12, "hdlr")
+	fullHdlr := nameEq(metaOff+16, "hdlr")
+	if bareHdlr && !fullHdlr {
+		return 8
+	}
+	return 12
 }
 
 func rebuildMeta(metaBody []byte, newIlst []byte) ([]byte, error) {

@@ -75,9 +75,9 @@ func WriteTag(filePath string, opts WriteOptions) error {
 		return WriteWAV(filePath, opts)
 	case ".m4a", ".mp4", ".m4b", ".mov":
 		// .mov 是 QuickTime/ISO-BMFF 容器,与 MP4 同族,共用 moov>udta>meta>ilst
-		// iTunes atoms。ffmpeg 产出的 mov(如 bilibili 下载源)符合此布局。
-		// 注:老式纯 QuickTime mov 的 meta atom 不带 version/flags 前缀,WriteMP4
-		// 按 iTunes MP4 规范写(带前缀),此类文件不在支持范围。
+		// iTunes atoms。WriteMP4 兼容两种 meta 布局:标准 FullBox(带 version/flags)
+		// 与老式纯 QuickTime bare meta(不带前缀,如部分 bilibili 下载源),读取时按
+		// 实际布局定位子 atom,写回统一归一化为标准 FullBox。
 		return WriteMP4(filePath, opts)
 	case ".ogg", ".oga":
 		return WriteOGG(filePath, opts)

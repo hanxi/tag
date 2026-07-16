@@ -336,6 +336,61 @@ func TestWriteMP4_RoundTrip_MovExtension(t *testing.T) {
 	}
 }
 
+// TestWriteMP4_BareQuickTimeMeta 覆盖老式纯 QuickTime 的 bare meta 布局
+// (meta atom 不带 4 字节 version+flags，子 atom 从 +8 起，如部分 bilibili 下载源)。
+// 旧代码写死 +12 会错位 4 字节、丢失既有 ilst 并写坏文件；修复后按实际布局定位
+// 既有子 atom，写回归一化为标准 FullBox，read-back 应拿到覆盖后的新标题。
+func TestWriteMP4_BareQuickTimeMeta(t *testing.T) {
+	// 构造 moov>udta>meta[bare](hdlr + ilst[©nam=Old]) + mdat 的最小 mp4。
+	// buildAtom 产出无 version/flags 的 bare atom；buildAtomWithMeta 才是 FullBox。
+	children := append(buildMP4MetaHdlr(), buildMP4Ilst(WriteOptions{Title: "Old Title"})...)
+	bareMeta := buildAtom("meta", children)
+	udta := buildAtom("udta", bareMeta)
+	moov := buildAtom("moov", udta)
+	mdat := buildAtom("mdat", []byte{0x00, 0x01, 0x02, 0x03})
+
+	// 前置校验:构造出的 meta 确实是 bare 布局(hdrLen==8)。
+	udtaBody := udta[8:]
+	if _, metaOff, metaSize := findChildAtom(udtaBody, "meta"); metaOff < 0 {
+		t.Fatalf("meta not found in constructed udta")
+	} else if hl := mp4MetaHeaderLen(udtaBody, metaOff, metaSize); hl != 8 {
+		t.Fatalf("constructed meta should be bare (hdrLen=8), got %d", hl)
+	}
+
+	// ftyp 使 ReadFrom 识别为 MP4 族容器（检测 bytes[4:8]=="ftyp"）。
+	ftyp := buildAtom("ftyp", []byte("qt  \x00\x00\x00\x00qt  "))
+
+	var buf []byte
+	buf = append(buf, ftyp...)
+	buf = append(buf, moov...)
+	buf = append(buf, mdat...)
+
+	path := filepath.Join(t.TempDir(), "bare.mov")
+	if err := os.WriteFile(path, buf, 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	opts := WriteOptions{
+		Title:  "New MOV Title",
+		Artist: "New MOV Artist",
+		Lyrics: "New Lyrics\n第二行",
+	}
+	if err := WriteTag(path, opts); err != nil {
+		t.Fatalf("WriteTag: %v", err)
+	}
+
+	m := readBackMetadata(t, path)
+	if got := m.Title(); got != opts.Title {
+		t.Errorf("Title: got %q, want %q", got, opts.Title)
+	}
+	if got := m.Artist(); got != opts.Artist {
+		t.Errorf("Artist: got %q, want %q", got, opts.Artist)
+	}
+	if got := m.Lyrics(); got != opts.Lyrics {
+		t.Errorf("Lyrics: got %q, want %q", got, opts.Lyrics)
+	}
+}
+
 func TestWriteMP4_RoundTrip_OverwriteExistingTag(t *testing.T) {
 	path := copyFixture(t, "testdata/with_tags/sample.m4a")
 
