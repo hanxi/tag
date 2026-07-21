@@ -75,6 +75,10 @@ func ReadFrom(r io.ReadSeeker) (Metadata, error) {
 
 	case string(b[0:4]) == "FORM":
 		return ReadAIFFMeta(r)
+
+	case b[0] == 0x1A && b[1] == 0x45 && b[2] == 0xDF && b[3] == 0xA3:
+		// EBML magic → Matroska（.mka 音频 / .mkv 视频）容器，只读标签/封面。
+		return ReadMatroskaMeta(r)
 	}
 
 	return nil, errors.ErrUnsupported
@@ -105,14 +109,15 @@ type Format string
 
 // Supported tag formats.
 const (
-	UnknownFormat Format = ""        // Unknown Format.
-	ID3v1         Format = "ID3v1"   // ID3v1 tag format.
-	ID3v2_2       Format = "ID3v2.2" // ID3v2.2 tag format.
-	ID3v2_3       Format = "ID3v2.3" // ID3v2.3 tag format (most common).
-	ID3v2_4       Format = "ID3v2.4" // ID3v2.4 tag format.
-	MP4           Format = "MP4"     // MP4 tag (atom) format (see http://www.ftyps.com/ for a full file type list)
-	VORBIS        Format = "VORBIS"  // Vorbis Comment tag format.
-	APEv2         Format = "APEv2"   // APEv2 tag format (Monkey's Audio / WavPack / Musepack)
+	UnknownFormat Format = ""         // Unknown Format.
+	ID3v1         Format = "ID3v1"    // ID3v1 tag format.
+	ID3v2_2       Format = "ID3v2.2"  // ID3v2.2 tag format.
+	ID3v2_3       Format = "ID3v2.3"  // ID3v2.3 tag format (most common).
+	ID3v2_4       Format = "ID3v2.4"  // ID3v2.4 tag format.
+	MP4           Format = "MP4"      // MP4 tag (atom) format (see http://www.ftyps.com/ for a full file type list)
+	VORBIS        Format = "VORBIS"   // Vorbis Comment tag format.
+	APEv2         Format = "APEv2"    // APEv2 tag format (Monkey's Audio / WavPack / Musepack)
+	Matroska      Format = "Matroska" // Matroska/EBML tags (read-only; .mka/.mkv)
 )
 
 // FileType is an enumeration of the audio file types supported by this package, in particular
@@ -134,6 +139,7 @@ const (
 	WAV             FileType = "WAV"  // WAVE file
 	AIFF            FileType = "AIFF" // AIFF/AIFF-C file
 	APE             FileType = "APE"  // Monkey's Audio file
+	MKA             FileType = "MKA"  // Matroska audio container (read-only)
 )
 
 // Metadata is an interface which is used to describe metadata retrieved by this package.

@@ -69,6 +69,10 @@ func Identify(r io.ReadSeeker) (format Format, fileType FileType, err error) {
 
 	case string(b[0:4]) == "FORM" && (string(b[8:12]) == "AIFF" || string(b[8:12]) == "AIFC"):
 		return UnknownFormat, AIFF, nil
+
+	case b[0] == 0x1A && b[1] == 0x45 && b[2] == 0xDF && b[3] == 0xA3:
+		// EBML magic → Matroska（.mka/.mkv）容器，只读。
+		return Matroska, MKA, nil
 	}
 
 	n, err := r.Seek(-128, io.SeekEnd)
