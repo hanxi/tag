@@ -2,9 +2,9 @@
 
 [![GoDoc](https://pkg.go.dev/badge/github.com/hanxi/tag)](https://pkg.go.dev/github.com/hanxi/tag)
 
-This package provides MP3 (ID3v1,2.{2,3,4}), MP4 (AAC, M4A, ALAC), OGG, FLAC, WAV, and Monkey's Audio (APE) metadata detection, parsing and artwork extraction. It also supports **writing** tags back to MP3 (ID3v2.3), FLAC (Vorbis Comment + Picture), APE (APEv2 footer), and WAV (RIFF LIST INFO); M4A/OGG writers are TODO and return `ErrUnsupportedWrite` for now.
+This package provides MP3 (ID3v1,2.{2,3,4}), MP4 (AAC, M4A, ALAC), OGG, FLAC, WAV, Monkey's Audio (APE), AIFF/AIFF-C, DSF (DSD), and Matroska (.mka/.mkv) metadata detection, parsing and artwork extraction. It also supports **writing** tags back to MP3 (ID3v2.3), FLAC (Vorbis Comment + Picture), M4A/MP4/M4B/MOV (iTunes atoms), OGG (Vorbis Comment), APE (APEv2 footer), WAV (RIFF LIST INFO), and AIFF/AIF (ID3v2.3 chunk).
 
-> Forked from upstream and extended with encoding detection improvements plus MP3 (ID3v2.3) / FLAC (Vorbis Comment + PICTURE) writers used by Songloft.
+> Forked from upstream and extended with encoding detection improvements plus multi-format tag writers used by Songloft.
 
 ## Reading
 
@@ -31,6 +31,9 @@ err := tag.WriteTag("song.mp3", tag.WriteOptions{
     Album:       "Sample Album",
     Year:        2024,
     Genre:       "Pop",
+    Language:    "eng",
+    Style:       "Synth Pop",
+    Track:       "3/12",
     Lyrics:      "[00:00.00]...",        // UTF-8
     Picture: &tag.Picture{
         MIMEType: "image/jpeg",
@@ -45,10 +48,11 @@ Format dispatch is by file extension:
 |-----------|--------|--------------------------|
 | `.mp3` | ✅ ID3v2.3 | TIT2 / TPE1 / TPE2 / TALB / TYER / TCON / USLT / APIC |
 | `.flac` | ✅ Vorbis Comment + PICTURE | TITLE / ARTIST / ALBUMARTIST / ALBUM / DATE / GENRE / LYRICS + Picture(Front) |
-| `.ape` | ✅ APEv2 | Title / Artist / Album / Year / Genre / Lyrics + Comment |
+| `.m4a` / `.mp4` / `.m4b` / `.mov` | ✅ iTunes atoms | ©nam / ©ART / aART / ©alb / ©day / ©gen / ©lyr / covr |
+| `.ogg` / `.oga` | ✅ Vorbis Comment | TITLE / ARTIST / ALBUMARTIST / ALBUM / DATE / GENRE / LYRICS + METADATA_BLOCK_PICTURE |
+| `.ape` | ✅ APEv2 | Title / Artist / Album / Year / Genre / Lyrics / Cover Art (Front) |
 | `.wav` | ✅ RIFF LIST INFO | INAM / IART / IPRD / ICRD / IGNR / ICMT |
-| `.m4a` / `.mp4` / `.m4b` | ⚠️ TODO | Returns `ErrUnsupportedWrite` |
-| `.ogg` / `.oga` | ⚠️ TODO | Returns `ErrUnsupportedWrite` |
+| `.aif` / `.aiff` | ✅ ID3v2.3 (ID3 chunk) | TIT2 / TPE1 / TPE2 / TALB / TYER / TCON / USLT / APIC + NAME / AUTH |
 
 Other extensions return `ErrUnsupportedWrite`. Callers should treat tag-write failures as non-fatal (log + continue).
 
@@ -67,6 +71,8 @@ type Metadata interface {
 	Composer() string
 	Genre() string
 	Year() int
+	Language() string
+	Style() string
 
 	Track() (int, int) // Number, Total
 	Disc() (int, int) // Number, Total
@@ -76,6 +82,10 @@ type Metadata interface {
 	Comment() string
 
 	Raw() map[string]interface{} // NB: raw tag names are not consistent across formats.
+
+	Duration() time.Duration // Audio duration (from stream headers, not tags)
+	BitRate() int            // Bits per second
+	SampleRate() int         // Samples per second
 }
 ```
 
