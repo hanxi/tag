@@ -82,8 +82,14 @@ func ReadWAVMeta(r io.ReadSeeker) (Metadata, error) {
 			}
 		case "data":
 			m.dataSize = chunkSize
-			// Calculate duration now that we have both fmt and data info
-			if m.sampleRate > 0 && m.bitsPerSample > 0 && m.channels > 0 {
+			// Calculate duration now that we have both fmt and data info.
+			// Prefer the fmt chunk's nAvgBytesPerSec (byteRate) field, which is
+			// authoritative for every WAV format code (PCM, IEEE float, extensible,
+			// and compressed). Fall back to the PCM-derived rate only if byteRate
+			// is missing.
+			if m.byteRate > 0 {
+				m.duration = time.Duration(m.dataSize) * time.Second / time.Duration(m.byteRate)
+			} else if m.sampleRate > 0 && m.bitsPerSample > 0 && m.channels > 0 {
 				bytesPerSample := (m.bitsPerSample + 7) / 8 // Round up to nearest byte
 				bytesPerSecond := m.sampleRate * uint32(m.channels) * uint32(bytesPerSample)
 				if bytesPerSecond > 0 {
@@ -117,6 +123,7 @@ func ReadWAVMeta(r io.ReadSeeker) (Metadata, error) {
 
 type metadataWAV struct {
 	sampleRate    uint32
+	byteRate      uint32
 	bitsPerSample uint16
 	channels      uint16
 	dataSize      uint32
@@ -241,8 +248,14 @@ func (m *metadataWAV) mergeID3(id3Meta *metadataID3v2) {
 }
 
 func (m *metadataWAV) readFmtChunk(r io.ReadSeeker, chunkSize uint32) error {
-	// Read audio format (2 bytes) - should be 1 for PCM
-	audioFormat, err := readUint16LittleEndian(r)
+	// Read audio format (2 bytes). Common values: 1 = PCM, 3 = IEEE float,
+	// 0xFFFE = WAVE_FORMAT_EXTENSIBLE. We do NOT reject non-PCM formats here:
+	// the fmt chunk only provides sampleRate/channels/bits/byteRate used for
+	// duration, while textual tags live in a separate LIST/ID3 chunk. Failing
+	// here would abort the whole read and lose those tags (e.g. GBK RIFF INFO
+	// on 24-bit/192kHz WAVE_FORMAT_EXTENSIBLE files), forcing a garbled ffprobe
+	// fallback. See songloft-org/songloft#319.
+	_, err := readUint16LittleEndian(r)
 	if err != nil {
 		return err
 	}
@@ -259,8 +272,14 @@ func (m *metadataWAV) readFmtChunk(r io.ReadSeeker, chunkSize uint32) error {
 		return err
 	}
 
-	// Skip byte rate (4 bytes) and block align (2 bytes)
-	_, err = r.Seek(6, io.SeekCurrent)
+	// Read byte rate / nAvgBytesPerSec (4 bytes) — authoritative for duration
+	m.byteRate, err = readUint32LittleEndian(r)
+	if err != nil {
+		return err
+	}
+
+	// Skip block align (2 bytes)
+	_, err = r.Seek(2, io.SeekCurrent)
 	if err != nil {
 		return err
 	}
@@ -271,18 +290,13 @@ func (m *metadataWAV) readFmtChunk(r io.ReadSeeker, chunkSize uint32) error {
 		return err
 	}
 
-	// Skip any remaining bytes in the fmt chunk (for non-PCM formats)
+	// Skip any remaining bytes in the fmt chunk (extension/GUID for non-PCM formats)
 	remainingBytes := int64(chunkSize) - 16
 	if remainingBytes > 0 {
 		_, err = r.Seek(remainingBytes, io.SeekCurrent)
 		if err != nil {
 			return err
 		}
-	}
-
-	// Basic validation
-	if audioFormat != 1 {
-		return fmt.Errorf("unsupported audio format: %d (only PCM format 1 is supported)", audioFormat)
 	}
 
 	return nil

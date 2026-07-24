@@ -3,8 +3,12 @@ package tag
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 	"testing"
 	"time"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 )
 
 func createTestWAV(sampleRate uint32, channels uint16, bitsPerSample uint16, durationSeconds float64) []byte {
@@ -242,5 +246,100 @@ func TestWAVID3Chunk(t *testing.T) {
 	}
 	if !bytes.Equal(pic.Data, pictureData) {
 		t.Errorf("Expected picture data %v, got %v", pictureData, pic.Data)
+	}
+}
+
+// toGBK encodes a UTF-8 string to GBK bytes for building test fixtures.
+func toGBK(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := io.ReadAll(transform.NewReader(bytes.NewReader([]byte(s)), simplifiedchinese.GBK.NewEncoder()))
+	if err != nil {
+		t.Fatalf("GBK encode %q failed: %v", s, err)
+	}
+	return b
+}
+
+// createTestWAVExtensibleGBK builds a WAVE_FORMAT_EXTENSIBLE (0xFFFE) WAV whose
+// LIST/INFO tags are GBK-encoded, mirroring real-world files exported by some
+// Chinese tools (songloft-org/songloft#319).
+func createTestWAVExtensibleGBK(t *testing.T, title, artist, album string) []byte {
+	t.Helper()
+
+	writeInfoTag := func(w *bytes.Buffer, id string, data []byte) {
+		w.WriteString(id)
+		binary.Write(w, binary.LittleEndian, uint32(len(data)))
+		w.Write(data)
+		if len(data)%2 == 1 {
+			w.WriteByte(0)
+		}
+	}
+
+	var body bytes.Buffer
+
+	// fmt chunk (40 bytes) — WAVE_FORMAT_EXTENSIBLE, 2ch / 192kHz / 24-bit
+	const channels, sampleRate, bits = uint16(2), uint32(192000), uint16(24)
+	blockAlign := channels * (bits / 8)
+	byteRate := sampleRate * uint32(blockAlign)
+	body.WriteString("fmt ")
+	binary.Write(&body, binary.LittleEndian, uint32(40))
+	binary.Write(&body, binary.LittleEndian, uint16(0xFFFE)) // WAVE_FORMAT_EXTENSIBLE
+	binary.Write(&body, binary.LittleEndian, channels)
+	binary.Write(&body, binary.LittleEndian, sampleRate)
+	binary.Write(&body, binary.LittleEndian, byteRate)
+	binary.Write(&body, binary.LittleEndian, blockAlign)
+	binary.Write(&body, binary.LittleEndian, bits)
+	binary.Write(&body, binary.LittleEndian, uint16(22)) // cbSize
+	binary.Write(&body, binary.LittleEndian, bits)       // valid bits per sample
+	binary.Write(&body, binary.LittleEndian, uint32(3))  // channel mask
+	// SubFormat GUID: first 2 bytes = 0x0001 (PCM)
+	body.Write([]byte{0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71})
+
+	// data chunk — one second worth of silence
+	dataSize := byteRate
+	body.WriteString("data")
+	binary.Write(&body, binary.LittleEndian, dataSize)
+	body.Write(make([]byte, dataSize))
+
+	// LIST/INFO chunk with GBK-encoded tags
+	var info bytes.Buffer
+	info.WriteString("INFO")
+	writeInfoTag(&info, "INAM", toGBK(t, title))
+	writeInfoTag(&info, "IART", toGBK(t, artist))
+	writeInfoTag(&info, "IPRD", toGBK(t, album))
+	body.WriteString("LIST")
+	binary.Write(&body, binary.LittleEndian, uint32(info.Len()))
+	body.Write(info.Bytes())
+
+	var buf bytes.Buffer
+	buf.WriteString("RIFF")
+	binary.Write(&buf, binary.LittleEndian, uint32(4+body.Len()))
+	buf.WriteString("WAVE")
+	buf.Write(body.Bytes())
+	return buf.Bytes()
+}
+
+// TestWAVExtensibleGBKInfo verifies that WAVE_FORMAT_EXTENSIBLE files are parsed
+// (not rejected) and their GBK RIFF INFO tags are decoded to UTF-8.
+func TestWAVExtensibleGBKInfo(t *testing.T) {
+	wavData := createTestWAVExtensibleGBK(t, "单身情歌", "林志炫", "1987年到1999年华语100首经典")
+
+	meta, err := ReadWAVMeta(bytes.NewReader(wavData))
+	if err != nil {
+		t.Fatalf("ReadWAVMeta failed for WAVE_FORMAT_EXTENSIBLE: %v", err)
+	}
+
+	if got := meta.Title(); got != "单身情歌" {
+		t.Errorf("Title = %q, want %q", got, "单身情歌")
+	}
+	if got := meta.Artist(); got != "林志炫" {
+		t.Errorf("Artist = %q, want %q", got, "林志炫")
+	}
+	if got := meta.Album(); got != "1987年到1999年华语100首经典" {
+		t.Errorf("Album = %q, want %q", got, "1987年到1999年华语100首经典")
+	}
+
+	// byteRate-based duration: 1s of 192kHz/24-bit/stereo data
+	if diff := meta.Duration() - time.Second; diff < -time.Millisecond || diff > time.Millisecond {
+		t.Errorf("Duration = %v, want ~1s", meta.Duration())
 	}
 }
