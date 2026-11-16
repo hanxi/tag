@@ -117,6 +117,9 @@ func buildAPEv2Items(opts WriteOptions) ([]byte, uint32) {
 	if opts.Track != "" {
 		entries = append(entries, item{"Track", opts.Track})
 	}
+	if opts.Disc != "" {
+		entries = append(entries, item{"Disc", opts.Disc})
+	}
 	if opts.Lyrics != "" {
 		entries = append(entries, item{"Lyrics", opts.Lyrics})
 	}

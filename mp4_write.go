@@ -324,6 +324,10 @@ func buildMP4Ilst(opts WriteOptions) []byte {
 	if trkn := buildMP4TrackAtom(opts.Track); trkn != nil {
 		body.Write(trkn)
 	}
+	if disk := buildMP4TrackAtom(opts.Disc); disk != nil {
+		copy(disk[4:8], "disk")
+		body.Write(disk)
+	}
 
 	if opts.Picture != nil && len(opts.Picture.Data) > 0 {
 		body.Write(buildMP4PictureAtom(opts.Picture))

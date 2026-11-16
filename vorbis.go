@@ -270,16 +270,24 @@ func (m *metadataVorbis) Year() int {
 }
 
 func (m *metadataVorbis) Track() (int, int) {
-	x, _ := strconv.Atoi(m.c["tracknumber"])
+	x, n := parseXofN(strings.TrimSpace(m.c["tracknumber"]))
 	// https://wiki.xiph.org/Field_names
-	n, _ := strconv.Atoi(m.c["tracktotal"])
+	if total, err := strconv.Atoi(m.c["tracktotal"]); err == nil && total > 0 {
+		n = total
+	} else if total, err := strconv.Atoi(m.c["totaltracks"]); err == nil && total > 0 {
+		n = total
+	}
 	return x, n
 }
 
 func (m *metadataVorbis) Disc() (int, int) {
 	// https://wiki.xiph.org/Field_names
-	x, _ := strconv.Atoi(m.c["discnumber"])
-	n, _ := strconv.Atoi(m.c["disctotal"])
+	x, n := parseXofN(strings.TrimSpace(m.c["discnumber"]))
+	if total, err := strconv.Atoi(m.c["disctotal"]); err == nil && total > 0 {
+		n = total
+	} else if total, err := strconv.Atoi(m.c["totaldiscs"]); err == nil && total > 0 {
+		n = total
+	}
 	return x, n
 }
 

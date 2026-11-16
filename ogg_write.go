@@ -315,6 +315,12 @@ func collectVorbisComments(opts WriteOptions) []string {
 			comments = append(comments, "TRACKTOTAL="+trackTotal)
 		}
 	}
+	if discNum, discTotal := splitTrack(opts.Disc); discNum != "" {
+		comments = append(comments, "DISCNUMBER="+discNum)
+		if discTotal != "" {
+			comments = append(comments, "DISCTOTAL="+discTotal)
+		}
+	}
 	return comments
 }
 

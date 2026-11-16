@@ -234,6 +234,12 @@ func buildFLACVorbisComment(opts WriteOptions) []byte {
 			comments = append(comments, "TRACKTOTAL="+trackTotal)
 		}
 	}
+	if discNum, discTotal := splitTrack(opts.Disc); discNum != "" {
+		comments = append(comments, "DISCNUMBER="+discNum)
+		if discTotal != "" {
+			comments = append(comments, "DISCTOTAL="+discTotal)
+		}
+	}
 
 	binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(comments)))
 	buf.Write(lenBuf[:])

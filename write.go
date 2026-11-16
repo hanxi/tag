@@ -7,6 +7,7 @@ package tag
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -31,6 +32,7 @@ type WriteOptions struct {
 	Style       string            // Track style/sub-genre; empty skips the field
 	Lyrics      string            // UTF-8 lyrics; embedded as USLT (MP3) / LYRICS or unsynced lyrics (others)
 	Track       string            // Track number, "3" or "3/12" (number/total); empty skips the field
+	Disc        string            // Disc number, "1" or "1/2" (number/total); empty skips the field
 	Picture     *Picture          // Cover art (MIMEType + Data required; Description optional)
 	CustomTags  map[string]string // User-defined tags: key→value. Written as TXXX (MP3), Vorbis Comment (FLAC/OGG), freeform atom (M4A), APEv2 item (APE).
 }
@@ -64,6 +66,22 @@ func splitTrack(s string) (number, total string) {
 // Returns ErrUnsupportedWrite for other extensions. The original file is
 // rewritten atomically (write to a sibling temp file then rename).
 func WriteTag(filePath string, opts WriteOptions) error {
+	// Older databases and callers have no disc field. Preserve an existing
+	// disc tag when they rewrite metadata before the next full rescan.
+	if opts.Disc == "" {
+		if f, err := os.Open(filePath); err == nil {
+			if metadata, err := ReadFrom(f); err == nil {
+				number, total := metadata.Disc()
+				if number > 0 {
+					opts.Disc = fmt.Sprint(number)
+					if total > 0 {
+						opts.Disc += "/" + fmt.Sprint(total)
+					}
+				}
+			}
+			_ = f.Close()
+		}
+	}
 	ext := strings.ToLower(filepath.Ext(filePath))
 	switch ext {
 	case ".mp3":
