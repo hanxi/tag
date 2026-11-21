@@ -2,6 +2,7 @@ package tag
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"strconv"
@@ -11,204 +12,148 @@ import (
 // ReadWAVMeta reads WAV metadata from the io.ReadSeeker, returning the resulting
 // metadata in a Metadata implementation, or non-nil error if there was a problem.
 func ReadWAVMeta(r io.ReadSeeker) (Metadata, error) {
-	// verify RIFF chunk
-	str, err := readString(r, 4)
+	size, err := getFileSize(r)
 	if err != nil {
 		return nil, err
 	}
-	if str != "RIFF" {
-		return nil, fmt.Errorf("chunk header %v does not match expected 'RIFF'", str)
-	}
-
-	// skip file size (4 bytes)
-	_, err = r.Seek(4, io.SeekCurrent)
+	h, err := readAt(r, 0, 12)
 	if err != nil {
 		return nil, err
 	}
-
-	// verify WAVE filetype
-	str, err = readString(r, 4)
-	if err != nil {
-		return nil, err
+	if string(h[:4]) != "RIFF" || string(h[8:12]) != "WAVE" || int64(binary.LittleEndian.Uint32(h[4:8])) != size-8 {
+		return nil, fmt.Errorf("invalid WAVE RIFF header")
 	}
-	if str != "WAVE" {
-		return nil, fmt.Errorf("filetype %v does not match expected 'WAVE'", str)
-	}
-
 	m := &metadataWAV{}
-
-	// Parse chunks to find fmt and data chunks
-	for {
-		chunkID, err := readString(r, 4)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-
-		chunkSize, err := readUint32LittleEndian(r)
-		if err != nil {
-			return nil, err
-		}
-
-		switch chunkID {
+	var hasFormat, hasData bool
+	var id3 []*metadataID3v2
+	err = walkChunks(r, 12, size, false, func(c fileChunk) error {
+		switch c.id {
 		case "LIST":
-			listType, err := readString(r, 4)
+			if c.size < 4 {
+				return io.ErrUnexpectedEOF
+			}
+			kind, err := readAt(r, c.data, 4)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			if listType == "INFO" {
-				if err := m.readLISTInfo(r, int64(chunkSize)-4); err != nil {
-					return nil, err
-				}
-				continue
+			if string(kind) == "INFO" {
+				return m.readLISTInfo(r, c.size-4)
 			}
-			// Other LIST types: skip
-			_, err = r.Seek(int64(chunkSize)-4, io.SeekCurrent)
+			if string(kind) == "wavl" {
+				return walkChunks(r, c.data+4, c.data+c.size, false, func(child fileChunk) error {
+					if child.id == "data" {
+						hasData = true
+						m.dataSize += uint32(child.size)
+					}
+					return nil
+				})
+			}
+		case "ID3 ", "id3 ", "id3\x00":
+			tags, err := readOptionalID3(r, c.data, c.size)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			continue
-
-		case "ID3 ":
-			if err := m.readID3Chunk(r, chunkSize); err != nil {
-				return nil, err
-			}
+			id3 = append(id3, tags)
 		case "fmt ":
-			err = m.readFmtChunk(r, chunkSize)
-			if err != nil {
-				return nil, err
+			if c.size < 16 {
+				return io.ErrUnexpectedEOF
 			}
+			hasFormat = true
+			if _, err := r.Seek(c.data, io.SeekStart); err != nil {
+				return err
+			}
+			return m.readFmtChunk(r, uint32(c.size))
 		case "data":
-			m.dataSize = chunkSize
-			// Calculate duration now that we have both fmt and data info.
-			// Prefer the fmt chunk's nAvgBytesPerSec (byteRate) field, which is
-			// authoritative for every WAV format code (PCM, IEEE float, extensible,
-			// and compressed). Fall back to the PCM-derived rate only if byteRate
-			// is missing.
-			if m.byteRate > 0 {
-				m.duration = time.Duration(m.dataSize) * time.Second / time.Duration(m.byteRate)
-			} else if m.sampleRate > 0 && m.bitsPerSample > 0 && m.channels > 0 {
-				bytesPerSample := (m.bitsPerSample + 7) / 8 // Round up to nearest byte
-				bytesPerSecond := m.sampleRate * uint32(m.channels) * uint32(bytesPerSample)
-				if bytesPerSecond > 0 {
-					m.duration = time.Duration(m.dataSize) * time.Second / time.Duration(bytesPerSecond)
-				}
-			}
-			// Skip the data chunk content
-			_, err = r.Seek(int64(chunkSize), io.SeekCurrent)
-			if err != nil {
-				return nil, err
-			}
-		default:
-			// Skip unknown chunks
-			_, err = r.Seek(int64(chunkSize), io.SeekCurrent)
-			if err != nil {
-				return nil, err
-			}
+			hasData = true
+			m.dataSize += uint32(c.size)
 		}
-
-		// Ensure we're aligned to even byte boundary (WAV chunks are word-aligned)
-		if chunkSize%2 == 1 {
-			_, err = r.Seek(1, io.SeekCurrent)
-			if err != nil {
-				return nil, err
-			}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !hasFormat || !hasData {
+		return nil, fmt.Errorf("missing WAVE format or data")
+	}
+	if m.byteRate > 0 {
+		m.duration = sampleDuration(uint64(m.dataSize), int(m.byteRate))
+	} else if m.sampleRate > 0 && m.bitsPerSample > 0 && m.channels > 0 {
+		rate := uint64(m.sampleRate) * uint64(m.channels) * uint64((m.bitsPerSample+7)/8)
+		if rate < uint64(1<<31) {
+			m.duration = sampleDuration(uint64(m.dataSize), int(rate))
 		}
 	}
-
+	for _, tags := range id3 {
+		m.mergeID3(tags)
+	}
 	return m, nil
 }
 
 type metadataWAV struct {
-	sampleRate    uint32
-	byteRate      uint32
-	bitsPerSample uint16
-	channels      uint16
-	dataSize      uint32
-	duration      time.Duration
-	format        Format
-	title         string
-	artist        string
-	artists       []string
-	album         string
-	albumArtist   string
-	albumArtists  []string
-	composer      string
-	year          string
-	genre         string
-	track         int
-	trackTotal    int
-	disc          int
-	discTotal     int
-	picture       *Picture
-	lyrics        string
-	comment       string
+	language, style string
+	sampleRate      uint32
+	byteRate        uint32
+	bitsPerSample   uint16
+	channels        uint16
+	dataSize        uint32
+	duration        time.Duration
+	format          Format
+	title           string
+	artist          string
+	artists         []string
+	album           string
+	albumArtist     string
+	albumArtists    []string
+	composer        string
+	year            string
+	genre           string
+	track           int
+	trackTotal      int
+	disc            int
+	discTotal       int
+	picture         *Picture
+	lyrics          string
+	comment         string
 }
 
 func (m *metadataWAV) readLISTInfo(r io.ReadSeeker, size int64) error {
-	endPos, _ := r.Seek(0, io.SeekCurrent)
-	endPos += size
-	for {
-		cur, _ := r.Seek(0, io.SeekCurrent)
-		if cur >= endPos {
-			break
-		}
-		id, err := readString(r, 4)
-		if err != nil {
-			return nil
-		}
-		subSize, err := readUint32LittleEndian(r)
-		if err != nil {
-			return nil
-		}
-		data := make([]byte, subSize)
-		if _, err := io.ReadFull(r, data); err != nil {
-			return nil
-		}
-		str := fixEncoding(bytes.TrimRight(data, "\x00"))
-		switch id {
-		case "INAM":
-			m.title = str
-		case "IART":
-			m.artist = str
-		case "IPRD":
-			m.album = str
-		case "ICRD":
-			m.year = str
-		case "IGNR":
-			m.genre = str
-		case "ICMT":
-			m.comment = str
-		}
-		// Word-aligned padding
-		if subSize%2 == 1 {
-			if _, err := r.Seek(1, io.SeekCurrent); err != nil {
-				return nil
-			}
-		}
-	}
-	return nil
-}
-
-func (m *metadataWAV) readID3Chunk(r io.ReadSeeker, chunkSize uint32) error {
-	startPos, err := r.Seek(0, io.SeekCurrent)
+	start, err := r.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return err
 	}
-
-	id3Meta, err := ReadID3v2Tags(r)
-	if err == nil {
-		m.mergeID3(id3Meta)
-	}
-
-	_, err = r.Seek(startPos+int64(chunkSize), io.SeekStart)
-	return err
+	return walkChunks(r, start, start+size, false, func(c fileChunk) error {
+		switch c.id {
+		case "INAM", "IART", "IPRD", "ICRD", "IGNR", "ITRK", "ICMT":
+			data, err := chunkData(r, c)
+			if err != nil {
+				return err
+			}
+			value := fixEncoding(bytes.TrimRight(data, "\x00"))
+			switch c.id {
+			case "INAM":
+				m.title = value
+			case "IART":
+				m.artist = value
+			case "IPRD":
+				m.album = value
+			case "ICRD":
+				m.year = value
+			case "IGNR":
+				m.genre = value
+			case "ITRK":
+				m.track, m.trackTotal = parseXofN(value)
+			case "ICMT":
+				m.comment = value
+			}
+		}
+		return nil
+	})
 }
 
 func (m *metadataWAV) mergeID3(id3Meta *metadataID3v2) {
 	m.format = id3Meta.Format()
+	m.language = id3Meta.Language()
+	m.style = id3Meta.Style()
 	if t := id3Meta.Title(); t != "" {
 		m.title = t
 	}
@@ -353,8 +298,8 @@ func (m *metadataWAV) Year() int {
 func (m *metadataWAV) Genre() string { return m.genre }
 
 // RIFF INFO has no standard language/style key, so these are always empty.
-func (m *metadataWAV) Language() string { return "" }
-func (m *metadataWAV) Style() string    { return "" }
+func (m *metadataWAV) Language() string { return m.language }
+func (m *metadataWAV) Style() string    { return m.style }
 
 func (m *metadataWAV) Track() (int, int) {
 	return m.track, m.trackTotal

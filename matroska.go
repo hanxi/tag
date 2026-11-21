@@ -71,6 +71,9 @@ type metadataMatroska struct {
 	sampleRate     int
 	timestampScale uint64 // ns per tick，默认 1000000
 	rawDuration    float64
+	docType        string
+	trackUID       uint64
+	tagGroups      []matroskaTagGroup
 	segmentTitle   string // Segment>Info>Title：整个文件的标题（ffmpeg 把 -metadata title 写这里而非 TITLE 标签）
 }
 
@@ -81,6 +84,7 @@ func ReadMatroskaMeta(r io.ReadSeeker) (Metadata, error) {
 		timestampScale: 1000000,
 	}
 
+	var haveSegment bool
 	fileEnd, err := r.Seek(0, io.SeekEnd)
 	if err != nil {
 		return nil, err
@@ -93,9 +97,19 @@ func ReadMatroskaMeta(r io.ReadSeeker) (Metadata, error) {
 	err = m.forEachChild(r, fileEnd, func(id uint64, size int64, unknown bool, dataStart int64) error {
 		switch id {
 		case ebmlIDHeader:
-			// 跳过 EBML 头
-			return nil
+			if unknown {
+				return errors.New("unknown EBML header size")
+			}
+			return m.forEachChild(r, dataStart+size, func(id uint64, size int64, _ bool, _ int64) error {
+				if id != 0x4282 {
+					return nil
+				}
+				b, err := readEBMLBytes(r, size)
+				m.docType = string(b)
+				return err
+			})
 		case mkvIDSegment:
+			haveSegment = true
 			segEnd := dataStart + size
 			if unknown {
 				segEnd = fileEnd
@@ -106,6 +120,34 @@ func ReadMatroskaMeta(r io.ReadSeeker) (Metadata, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	if !haveSegment || (m.docType != "matroska" && m.docType != "webm") {
+		return nil, errors.New("invalid Matroska document")
+	}
+	// Global fields are fallbacks. Only the primary audio track can override them.
+	for _, group := range m.tagGroups {
+		if group.uid == 0 {
+			for k, v := range group.values {
+				if _, ok := m.c[k]; !ok {
+					m.c[k] = v
+				}
+			}
+		}
+	}
+	selected := make(map[string]bool)
+	for _, group := range m.tagGroups {
+		if group.uid != 0 && group.uid == m.trackUID {
+			for k, v := range group.values {
+				if !selected[k] {
+					m.c[k] = v
+					selected[k] = true
+				}
+			}
+		}
+	}
+	if m.docType == "webm" {
+		m.p = nil
 	}
 
 	// 计算时长：Duration(tick) * TimestampScale(ns) → time.Duration
@@ -132,15 +174,17 @@ func (m *metadataMatroska) forEachChild(r io.ReadSeeker, end int64, fn func(id u
 
 		id, size, unknown, err := readEBMLElementHeader(r)
 		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				return nil // 尾部残缺，尽力而为
-			}
+
 			return err
 		}
 
 		dataStart, err := r.Seek(0, io.SeekCurrent)
 		if err != nil {
 			return err
+		}
+
+		if dataStart > end || (!unknown && size > end-dataStart) {
+			return io.ErrUnexpectedEOF
 		}
 
 		if err := fn(id, size, unknown, dataStart); err != nil {
@@ -226,13 +270,17 @@ func (m *metadataMatroska) parseTracks(r io.ReadSeeker, end int64) error {
 }
 
 func (m *metadataMatroska) parseTrackEntry(r io.ReadSeeker, end int64) error {
-	var trackType uint64
+	var trackType, uid uint64
 	var sampleRate int
 	err := m.forEachChild(r, end, func(id uint64, size int64, unknown bool, dataStart int64) error {
 		if unknown {
 			return nil
 		}
 		switch id {
+		case mkvTrackUID:
+			var err error
+			uid, err = readEBMLUint(r, size)
+			return err
 		case mkvIDTrackType:
 			v, err := readEBMLUint(r, size)
 			if err != nil {
@@ -260,7 +308,8 @@ func (m *metadataMatroska) parseTrackEntry(r io.ReadSeeker, end int64) error {
 		return err
 	}
 	// 仅采纳首个音频轨的采样率
-	if trackType == 2 && sampleRate > 0 && m.sampleRate == 0 {
+	if trackType == 2 && m.trackUID == 0 {
+		m.trackUID = uid
 		m.sampleRate = sampleRate
 	}
 	return nil
@@ -275,23 +324,38 @@ func (m *metadataMatroska) parseTags(r io.ReadSeeker, end int64) error {
 	})
 }
 
+type matroskaTagGroup struct {
+	uid    uint64
+	values map[string]string
+}
+
 func (m *metadataMatroska) parseTag(r io.ReadSeeker, end int64) error {
-	return m.forEachChild(r, end, func(id uint64, size int64, unknown bool, dataStart int64) error {
+	group := matroskaTagGroup{values: make(map[string]string)}
+	eligible := true
+	err := m.forEachChild(r, end, func(id uint64, size int64, unknown bool, dataStart int64) error {
 		if unknown {
 			return nil
 		}
 		switch id {
 		case mkvIDSimpleTag:
-			return m.parseSimpleTag(r, dataStart+size)
+			return m.parseSimpleTag(r, dataStart+size, group.values, 0)
 		case mkvIDTargets:
-			// Targets(级别信息)当前忽略：所有级别的标签统一收集，最外层优先。
-			return nil
+			var err error
+			group.uid, eligible, err = matroskaTarget(r, dataStart, dataStart+size)
+			return err
 		}
 		return nil
 	})
+	if err == nil && eligible {
+		m.tagGroups = append(m.tagGroups, group)
+	}
+	return err
 }
 
-func (m *metadataMatroska) parseSimpleTag(r io.ReadSeeker, end int64) error {
+func (m *metadataMatroska) parseSimpleTag(r io.ReadSeeker, end int64, values map[string]string, depth int) error {
+	if depth > 16 {
+		return errors.New("Matroska tag depth exceeded")
+	}
 	var name string
 	var value string
 	var haveValue bool
@@ -324,7 +388,7 @@ func (m *metadataMatroska) parseSimpleTag(r io.ReadSeeker, end int64) error {
 			}
 		case mkvIDSimpleTag:
 			// 嵌套 SimpleTag：递归收集
-			return m.parseSimpleTag(r, dataStart+size)
+			return m.parseSimpleTag(r, dataStart+size, values, depth+1)
 		}
 		return nil
 	})
@@ -332,10 +396,10 @@ func (m *metadataMatroska) parseSimpleTag(r io.ReadSeeker, end int64) error {
 		return err
 	}
 	if name != "" && haveValue {
-		key := strings.ToLower(strings.TrimSpace(name))
+		key := canonicalMatroskaField(name)
 		// 最外层(先出现的)优先，不覆盖已有值
-		if _, ok := m.c[key]; !ok {
-			m.c[key] = value
+		if _, ok := values[key]; !ok {
+			values[key] = value
 		}
 	}
 	return nil
@@ -383,7 +447,7 @@ func (m *metadataMatroska) parseAttachedFile(r io.ReadSeeker, end int64) error {
 		return err
 	}
 
-	if len(data) == 0 {
+	if len(data) == 0 || !isMatroskaCover(fileName, mime) {
 		return nil
 	}
 	// 已有封面则保留第一个
@@ -537,8 +601,13 @@ func readEBMLFloat(r io.Reader, size int64) (float64, error) {
 
 // ---- Metadata 接口实现 ----
 
-func (m *metadataMatroska) Format() Format     { return Matroska }
-func (m *metadataMatroska) FileType() FileType { return MKA }
+func (m *metadataMatroska) Format() Format { return Matroska }
+func (m *metadataMatroska) FileType() FileType {
+	if m.docType == "webm" {
+		return WEBM
+	}
+	return MKA
+}
 
 func (m *metadataMatroska) Raw() map[string]interface{} {
 	raw := make(map[string]interface{}, len(m.c))
@@ -550,14 +619,14 @@ func (m *metadataMatroska) Raw() map[string]interface{} {
 
 func (m *metadataMatroska) Title() string {
 	// TITLE 标签优先；ffmpeg 通常把整体标题写进 Segment>Info>Title，故作兜底。
-	if v := m.c["title"]; v != "" {
+	if v, ok := m.c["title"]; ok {
 		return v
 	}
 	return m.segmentTitle
 }
 
 func (m *metadataMatroska) Artist() string {
-	if v := m.c["artist"]; v != "" {
+	if v, ok := m.c["artist"]; ok {
 		return v
 	}
 	return m.c["performer"]
@@ -597,7 +666,7 @@ func (m *metadataMatroska) Style() string { return m.c["style"] }
 
 func (m *metadataMatroska) Year() int {
 	// Matroska 标准日期标签：DATE_RELEASED / DATE_RECORDED；ffmpeg 常写 DATE / YEAR。
-	for _, k := range []string{"date_released", "date_recorded", "date", "year"} {
+	for _, k := range []string{"year", "date_released", "date_recorded", "date", "year"} {
 		if y := parseMatroskaYear(m.c[k]); y > 0 {
 			return y
 		}
@@ -619,7 +688,7 @@ func parseMatroskaYear(s string) int {
 
 func (m *metadataMatroska) Track() (int, int) {
 	// Matroska track 目标级标签常见 PART_NUMBER；ffmpeg 亦可写 track/tracknumber。
-	for _, k := range []string{"part_number", "tracknumber", "track"} {
+	for _, k := range []string{"track"} {
 		if v := m.c[k]; v != "" {
 			return splitMatroskaNumberTotal(v)
 		}
@@ -649,7 +718,7 @@ func splitMatroskaNumberTotal(s string) (int, int) {
 }
 
 func (m *metadataMatroska) Lyrics() string {
-	if v := m.c["lyrics"]; v != "" {
+	if v, ok := m.c["lyrics"]; ok {
 		return v
 	}
 	return m.c["unsynced_lyrics"]

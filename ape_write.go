@@ -99,6 +99,9 @@ func buildAPEv2Items(opts WriteOptions) ([]byte, uint32) {
 	if opts.Artist != "" {
 		entries = append(entries, item{"Artist", opts.Artist})
 	}
+	if opts.AlbumArtist != "" {
+		entries = append(entries, item{"Album Artist", opts.AlbumArtist})
+	}
 	if opts.Album != "" {
 		entries = append(entries, item{"Album", opts.Album})
 	}

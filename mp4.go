@@ -81,80 +81,108 @@ func ReadAtoms(r io.ReadSeeker) (Metadata, error) {
 		data:     make(map[string]interface{}),
 		fileType: UnknownFileType,
 	}
-	err := m.readAtoms(r)
+	size, err := getFileSize(r)
+	if err != nil {
+		return nil, err
+	}
+	var haveMovie bool
+	err = walkMP4(r, 0, size, func(c fileChunk) error {
+		switch c.id {
+		case "ftyp":
+			if c.size < 8 {
+				return io.ErrUnexpectedEOF
+			}
+			brand, err := readAt(r, c.data, 4)
+			if err != nil {
+				return err
+			}
+			switch string(brand) {
+			case "qt  ":
+				m.fileType = MOV
+			case "M4A ":
+				m.fileType = M4A
+			case "M4B ":
+				m.fileType = M4B
+			case "M4P ":
+				m.fileType = M4P
+			}
+		case "moov":
+			haveMovie = true
+			return m.readMP4Metadata(r, c.data, c.end, "moov")
+		}
+		return nil
+	})
+	if err == nil && !haveMovie {
+		err = errors.New("missing QuickTime movie atom")
+	}
+	if m.fileType == UnknownFileType && isLegacyQuickTime(r) {
+		m.fileType = MOV
+	}
 	return m, err
 }
 
-func (m *metadataMP4) readAtoms(r io.ReadSeeker) error {
-	for {
-		name, size, err := readAtomHeader(r)
-		if err != nil {
-			if err == io.EOF {
-				return nil
+func (m *metadataMP4) readMP4Metadata(r io.ReadSeeker, start, end int64, parent string) error {
+	return walkMP4(r, start, end, func(c fileChunk) error {
+		switch {
+		case c.id == "udta" && parent == "moov":
+			return m.readMP4Metadata(r, c.data, c.end, c.id)
+		case c.id == "meta" && (parent == "moov" || parent == "udta"):
+			data, err := mp4MetaStart(r, c)
+			if err != nil {
+				return err
 			}
-			return err
+			return m.readMP4Metadata(r, data, c.end, c.id)
+		case c.id == "ilst" && parent == "meta":
+			return m.readMP4Metadata(r, c.data, c.end, c.id)
+		case c.id == "mvhd" && parent == "moov":
+			if c.size < 20 {
+				return io.ErrUnexpectedEOF
+			}
+			b, err := readAt(r, c.data, 20)
+			if err != nil {
+				return err
+			}
+			if b[0] == 0 {
+				m.duration = sampleDuration(uint64(binary.BigEndian.Uint32(b[16:])), int(binary.BigEndian.Uint32(b[12:16])))
+			} else if b[0] == 1 && c.size >= 32 {
+				b, err = readAt(r, c.data+20, 12)
+				if err != nil {
+					return err
+				}
+				m.duration = sampleDuration(binary.BigEndian.Uint64(b[4:]), int(binary.BigEndian.Uint32(b[:4])))
+			}
+		case parent == "ilst" && c.id == "----":
+			b, err := chunkData(r, c)
+			if err != nil {
+				return err
+			}
+			name, data, err := readCustomAtom(bytes.NewReader(b), uint32(len(b)+8))
+			if err != nil {
+				return err
+			}
+			if name != "----" && len(data) > 0 {
+				m.data[name] = strings.Join(data, ";")
+			}
+		case parent == "ilst" && atoms[c.id] != "":
+			b, err := chunkData(r, c)
+			if err != nil {
+				return err
+			}
+			return m.readAtomData(bytes.NewReader(b), c.id, uint32(len(b)), nil)
+		case parent == "udta" && atoms[c.id] != "" && c.id[0] == 0xa9:
+			b, err := chunkData(r, c)
+			if err != nil {
+				return err
+			}
+			if len(b) < 4 || int(binary.BigEndian.Uint16(b[:2])) > len(b)-4 {
+				return io.ErrUnexpectedEOF
+			}
+			if _, ok := m.data[c.id]; !ok {
+				m.data[c.id] = fixEncoding(b[4 : 4+int(binary.BigEndian.Uint16(b[:2]))])
+			}
 		}
-
-		switch name {
-		case "meta":
-			// next_item_id (int32)
-			_, err := readBytes(r, 4)
-			if err != nil {
-				return err
-			}
-			fallthrough
-
-		case "moov", "udta", "ilst":
-			return m.readAtoms(r)
-		case "mvhd":
-			_, err = r.Seek(12, io.SeekCurrent)
-			if err != nil {
-				return err
-			}
-			sampleRate, err := readUint32BigEndian(r)
-			if err != nil {
-				return err
-			}
-			sampleNum, err := readUint32BigEndian(r)
-			if err != nil {
-				return err
-			}
-			m.duration = time.Second * (time.Duration(sampleNum) / time.Duration(sampleRate))
-
-			_, err = r.Seek(int64(size-8-12-8), io.SeekCurrent)
-			if err != nil {
-				return err
-			}
-			continue
-		}
-
-		_, ok := atoms[name]
-		var data []string
-		if name == "----" {
-			name, data, err = readCustomAtom(r, size)
-			if err != nil {
-				return err
-			}
-
-			if name != "----" {
-				ok = true
-				size = 0 // already read data
-			}
-		}
-
-		if !ok {
-			_, err := r.Seek(int64(size-8), io.SeekCurrent)
-			if err != nil {
-				return err
-			}
-			continue
-		}
-
-		err = m.readAtomData(r, name, size-8, data)
-		if err != nil {
-			return err
-		}
-	}
+		return nil
+	})
 }
 
 func (m *metadataMP4) readAtomData(r io.ReadSeeker, name string, size uint32, processedData []string) error {
@@ -200,8 +228,8 @@ func (m *metadataMP4) readAtomData(r io.ReadSeeker, name string, size uint32, pr
 			return fmt.Errorf("invalid encoding: expected at least %d bytes, for track and disk numbers, got %d", 6, len(b))
 		}
 
-		m.data[name] = int(b[3])
-		m.data[name+"_count"] = int(b[5])
+		m.data[name] = int(binary.BigEndian.Uint16(b[2:4]))
+		m.data[name+"_count"] = int(binary.BigEndian.Uint16(b[4:6]))
 		return nil
 	}
 
@@ -317,7 +345,9 @@ func (m metadataMP4) Raw() map[string]interface{} { return m.data }
 func (m metadataMP4) getString(n []string) string {
 	for _, k := range n {
 		if x, ok := m.data[k]; ok {
-			return x.(string)
+			if value, ok := x.(string); ok {
+				return value
+			}
 		}
 	}
 	return ""
@@ -326,7 +356,9 @@ func (m metadataMP4) getString(n []string) string {
 func (m metadataMP4) getInt(n []string) int {
 	for _, k := range n {
 		if x, ok := m.data[k]; ok {
-			return x.(int)
+			if value, ok := x.(int); ok {
+				return value
+			}
 		}
 	}
 	return 0

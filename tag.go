@@ -47,10 +47,28 @@ func ReadFrom(r io.ReadSeeker) (Metadata, error) {
 	case string(b[0:4]) == "OggS":
 		return ReadOGGMeta(r)
 
-	case string(b[4:8]) == "ftyp":
+	case string(b[4:8]) == "ftyp" || isLegacyQuickTime(r):
 		return ReadAtoms(r)
 
+	case string(b[:4]) == "wvpk":
+		return readWavPack(r)
+
+	case string(b[:4]) == "FRM8":
+		return readDSDIFF(r)
+
+	case isDTS(b):
+		return readDTS(r)
+
+	case string(b[:4]) == "\x00\x00\x01\xba":
+		return readProgramStream(r)
+
+	case isADTSHeader(b):
+		return readADTS(r)
+
 	case string(b[0:3]) == "ID3":
+		if offset, err := adtsStart(r); err == nil && offset > 0 {
+			return readADTS(r)
+		}
 		size, err := getFileSize(r)
 		if err != nil {
 			return nil, fmt.Errorf("could not get file size: %w", err)
@@ -70,8 +88,30 @@ func ReadFrom(r io.ReadSeeker) (Metadata, error) {
 	case string(b[0:4]) == "DSD ":
 		return ReadDSFMeta(r)
 
-	case string(b[0:4]) == "RIFF":
+	case string(b[:4]) == "RIFF":
+		h, err := readAt(r, 8, 4)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := r.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		}
+		if string(h) == "AVI " {
+			return readAVI(r)
+		}
 		return ReadWAVMeta(r)
+
+	case string(b[:4]) == asfHeader[:4]:
+		metadata, _, err := readASF(r)
+		return metadata, err
+
+	case string(b[:3]) == "FLV":
+		metadata, _, err := readFLV(r)
+		return metadata, err
+
+	case string(b[:4]) == ".RMF":
+		metadata, _, err := readRealMedia(r)
+		return metadata, err
 
 	case string(b[0:4]) == "FORM":
 		return ReadAIFFMeta(r)
@@ -79,6 +119,10 @@ func ReadFrom(r io.ReadSeeker) (Metadata, error) {
 	case b[0] == 0x1A && b[1] == 0x45 && b[2] == 0xDF && b[3] == 0xA3:
 		// EBML magic → Matroska（.mka 音频 / .mkv 视频）容器，只读标签/封面。
 		return ReadMatroskaMeta(r)
+	}
+
+	if stride, sync := isTransportStream(r); stride != 0 {
+		return readTransportStream(r, stride, sync)
 	}
 
 	return nil, errors.ErrUnsupported
@@ -109,14 +153,18 @@ type Format string
 
 // Supported tag formats.
 const (
-	UnknownFormat Format = ""         // Unknown Format.
-	ID3v1         Format = "ID3v1"    // ID3v1 tag format.
-	ID3v2_2       Format = "ID3v2.2"  // ID3v2.2 tag format.
-	ID3v2_3       Format = "ID3v2.3"  // ID3v2.3 tag format (most common).
-	ID3v2_4       Format = "ID3v2.4"  // ID3v2.4 tag format.
-	MP4           Format = "MP4"      // MP4 tag (atom) format (see http://www.ftyps.com/ for a full file type list)
-	VORBIS        Format = "VORBIS"   // Vorbis Comment tag format.
-	APEv2         Format = "APEv2"    // APEv2 tag format (Monkey's Audio / WavPack / Musepack)
+	UnknownFormat Format = ""        // Unknown Format.
+	ID3v1         Format = "ID3v1"   // ID3v1 tag format.
+	ID3v2_2       Format = "ID3v2.2" // ID3v2.2 tag format.
+	ID3v2_3       Format = "ID3v2.3" // ID3v2.3 tag format (most common).
+	ID3v2_4       Format = "ID3v2.4" // ID3v2.4 tag format.
+	MP4           Format = "MP4"     // MP4 tag (atom) format (see http://www.ftyps.com/ for a full file type list)
+	VORBIS        Format = "VORBIS"  // Vorbis Comment tag format.
+	APEv2         Format = "APEv2"   // APEv2 tag format (Monkey's Audio / WavPack / Musepack)
+	RIFFInfo      Format = "RIFF INFO"
+	ASFMetadata   Format = "ASF"
+	FLVMetadata   Format = "AMF0"
+	RealMedia     Format = "RealMedia CONT"
 	Matroska      Format = "Matroska" // Matroska/EBML tags (read-only; .mka/.mkv)
 )
 
@@ -127,8 +175,9 @@ type FileType string
 
 // Supported file types.
 const (
-	UnknownFileType FileType = ""     // Unknown FileType.
-	MP3             FileType = "MP3"  // MP3 file
+	UnknownFileType FileType = ""    // Unknown FileType.
+	MP3             FileType = "MP3" // MP3 file
+	MOV             FileType = "MOV"
 	M4A             FileType = "M4A"  // M4A file Apple iTunes (ACC) Audio
 	M4B             FileType = "M4B"  // M4A file Apple iTunes (ACC) Audio Book
 	M4P             FileType = "M4P"  // M4A file Apple iTunes (ACC) AES Protected Audio
@@ -136,10 +185,21 @@ const (
 	FLAC            FileType = "FLAC" // FLAC file
 	OGG             FileType = "OGG"  // OGG file
 	DSF             FileType = "DSF"  // DSF file DSD Sony format see https://dsd-guide.com/sites/default/files/white-papers/DSFFileFormatSpec_E.pdf
+	WV              FileType = "WV"
+	AAC             FileType = "AAC"
+	DFF             FileType = "DFF"
 	WAV             FileType = "WAV"  // WAVE file
 	AIFF            FileType = "AIFF" // AIFF/AIFF-C file
 	APE             FileType = "APE"  // Monkey's Audio file
-	MKA             FileType = "MKA"  // Matroska audio container (read-only)
+	DTS             FileType = "DTS"
+	MPEGTS          FileType = "MPEG-TS"
+	MPEGPS          FileType = "MPEG-PS"
+	AVI             FileType = "AVI"
+	ASF             FileType = "ASF"
+	FLV             FileType = "FLV"
+	RM              FileType = "RM"
+	WEBM            FileType = "WEBM"
+	MKA             FileType = "MKA" // Matroska audio container (read-only)
 )
 
 // Metadata is an interface which is used to describe metadata retrieved by this package.

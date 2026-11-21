@@ -1,223 +1,178 @@
 package tag
 
 import (
-	"bytes"
 	"encoding/binary"
-	"fmt"
+	"errors"
 	"io"
+	"math"
 	"os"
-	"path/filepath"
+	"slices"
 	"strconv"
 )
 
-// WriteWAV writes RIFF LIST INFO metadata to a WAV file.
-//
-// WAV files are RIFF containers. Metadata goes in a "LIST" chunk
-// with subtype "INFO", containing sub-chunks like INAM (title),
-// IART (artist), IPRD (album), ICRD (year), IGNR (genre), ICMT (lyrics).
-//
-// This function:
-//  1. Validates the RIFF/WAVE header
-//  2. Scans existing chunks, keeping all non-tag chunks
-//  3. Builds a new LIST INFO chunk from WriteOptions
-//  4. Rewrites the file atomically via temp file + rename
-func WriteWAV(filePath string, opts WriteOptions) error {
-	src, err := os.Open(filePath)
-	if err != nil {
-		return fmt.Errorf("open wav: %w", err)
-	}
-	defer src.Close()
-
-	// Verify RIFF header
-	var riffID [4]byte
-	if _, err := io.ReadFull(src, riffID[:]); err != nil {
-		return fmt.Errorf("read riff id: %w", err)
-	}
-	if string(riffID[:]) != "RIFF" {
-		return fmt.Errorf("not a RIFF file")
-	}
-
-	// Skip RIFF size (4 bytes) — we'll recalculate later
-	var riffSize uint32
-	if err := binary.Read(src, binary.LittleEndian, &riffSize); err != nil {
-		return fmt.Errorf("read riff size: %w", err)
-	}
-	_ = riffSize
-
-	var waveID [4]byte
-	if _, err := io.ReadFull(src, waveID[:]); err != nil {
-		return fmt.Errorf("read wave id: %w", err)
-	}
-	if string(waveID[:]) != "WAVE" {
-		return fmt.Errorf("not a WAVE file")
-	}
-
-	// Parse chunks
-	type savedChunk struct {
-		id   [4]byte
-		data []byte
-	}
-	var chunks []savedChunk
-	for {
-		var chunkID [4]byte
-		if _, err := io.ReadFull(src, chunkID[:]); err != nil {
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				break
-			}
-			return fmt.Errorf("read chunk id: %w", err)
-		}
-		var chunkSize uint32
-		if err := binary.Read(src, binary.LittleEndian, &chunkSize); err != nil {
-			return fmt.Errorf("read chunk size: %w", err)
-		}
-
-		// Skip old LIST INFO chunks (we'll write a new one)
-		if string(chunkID[:]) == "LIST" {
-			var listType [4]byte
-			dataStart, _ := src.Seek(0, io.SeekCurrent)
-			if _, err := io.ReadFull(src, listType[:]); err != nil {
-				return fmt.Errorf("read list type: %w", err)
-			}
-			if string(listType[:]) == "INFO" {
-				// Skip this chunk entirely
-				if _, err := src.Seek(int64(chunkSize)-4, io.SeekCurrent); err != nil {
-					return fmt.Errorf("skip list info: %w", err)
-				}
-				continue
-			}
-			// Not INFO — seek back to data start and read the full chunk payload
-			_, _ = src.Seek(dataStart, io.SeekStart)
-		}
-
-		data := make([]byte, chunkSize)
-		if _, err := io.ReadFull(src, data); err != nil {
-			return fmt.Errorf("read chunk data: %w", err)
-		}
-		chunks = append(chunks, savedChunk{chunkID, data})
-
-		// Skip padding byte (WAV chunks are word-aligned)
-		if chunkSize%2 == 1 {
-			if _, err := src.Seek(1, io.SeekCurrent); err != nil {
-				break
-			}
-		}
-	}
-
-	// Build the new LIST INFO chunk
-	infoData := buildWAVLISTInfo(opts)
-
-	// Calculate total size: RIFF header(12) + all chunks + padding
-	var totalSize uint32 = 4 // "WAVE"
-	for _, c := range chunks {
-		totalSize += 8 + uint32(len(c.data)) // 4B id + 4B size + data
-		if len(c.data)%2 == 1 {
-			totalSize++ // padding
-		}
-	}
-	totalSize += 8 + uint32(len(infoData)) // LIST INFO (id + size)
-	if len(infoData)%2 == 1 {
-		totalSize++
-	}
-	// RIFF size = totalSize (everything after "RIFF" and the 4B size field itself)
-	// The RIFF size field contains the size of everything after it = totalSize
-
-	// Write temp file
-	dir := filepath.Dir(filePath)
-	tmp, err := os.CreateTemp(dir, ".songloft-tag-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp: %w", err)
-	}
-	tmpPath := tmp.Name()
-	cleanup := func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-	}
-
-	var buf bytes.Buffer
-	// RIFF header
-	buf.WriteString("RIFF")
-	binary.Write(&buf, binary.LittleEndian, totalSize)
-	buf.WriteString("WAVE")
-
-	// Existing chunks
-	for _, c := range chunks {
-		buf.Write(c.id[:])
-		writeWAVChunk(&buf, c.data)
-	}
-
-	// New LIST INFO
-	buf.WriteString("LIST")
-	writeWAVChunk(&buf, infoData)
-
-	// Write to temp file
-	if _, err := tmp.Write(buf.Bytes()); err != nil {
-		cleanup()
-		return fmt.Errorf("write temp: %w", err)
-	}
-
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("close temp: %w", err)
-	}
-	if err := src.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("close src: %w", err)
-	}
-	if err := os.Rename(tmpPath, filePath); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("rename: %w", err)
-	}
-	return nil
+var riffInfoFields = []struct{ id, field string }{
+	{"INAM", FieldTitle}, {"IART", FieldArtist}, {"IPRD", FieldAlbum}, {"ICRD", FieldYear},
+	{"IGNR", FieldGenre}, {"ITRK", FieldTrack}, {"ICMT", FieldLyrics},
 }
 
-// writeWAVChunk writes a WAV chunk header + data with word-alignment padding.
-func writeWAVChunk(buf *bytes.Buffer, data []byte) {
-	binary.Write(buf, binary.LittleEndian, uint32(len(data)))
-	buf.Write(data)
-	if len(data)%2 == 1 {
-		buf.WriteByte(0) // padding
-	}
-}
-
-// buildWAVLISTInfo builds the INFO sub-chunk data for a LIST chunk.
-// Format: "INFO" + [INAM][IART][IPRD][ICRD][IGNR][ICMT]...
-func buildWAVLISTInfo(opts WriteOptions) []byte {
-	type wavTag struct {
-		id  string
-		val string
-	}
-	var tags []wavTag
-	if opts.Title != "" {
-		tags = append(tags, wavTag{"INAM", opts.Title})
-	}
-	if opts.Artist != "" {
-		tags = append(tags, wavTag{"IART", opts.Artist})
-	}
-	if opts.Album != "" {
-		tags = append(tags, wavTag{"IPRD", opts.Album})
-	}
+func riffTextOptions(opts WriteOptions) map[string]string {
+	values := []string{opts.Title, opts.Artist, opts.Album, "", opts.Genre, opts.Track, opts.Lyrics}
 	if opts.Year > 0 {
-		tags = append(tags, wavTag{"ICRD", strconv.Itoa(opts.Year)})
+		values[3] = strconv.Itoa(opts.Year)
 	}
-	if opts.Genre != "" {
-		tags = append(tags, wavTag{"IGNR", opts.Genre})
-	}
-	if opts.Track != "" {
-		tags = append(tags, wavTag{"ITRK", opts.Track})
-	}
-	if opts.Lyrics != "" {
-		tags = append(tags, wavTag{"ICMT", opts.Lyrics})
-	}
-
-	var buf bytes.Buffer
-	buf.WriteString("INFO") // LIST subtype
-	for _, t := range tags {
-		buf.WriteString(t.id)
-		binary.Write(&buf, binary.LittleEndian, uint32(len(t.val)))
-		buf.WriteString(t.val)
-		if len(t.val)%2 == 1 {
-			buf.WriteByte(0) // padding
+	changed := make(map[string]string)
+	for i, f := range riffInfoFields {
+		if values[i] != "" || slices.Contains(opts.ClearFields, f.field) {
+			changed[f.id] = values[i]
 		}
 	}
-	return buf.Bytes()
+	return changed
+}
+
+func editRIFFInfo(r io.ReadSeeker, c fileChunk, changes map[string]string) ([]byte, error) {
+	body := []byte("INFO")
+	if c.id != "" {
+		err := walkChunks(r, c.data+4, c.data+c.size, false, func(child fileChunk) error {
+			if _, edited := changes[child.id]; edited {
+				return nil
+			}
+			if child.end-child.start > int64(maxMetadataSize-len(body)) {
+				return unsupportedLayout("RIFF INFO size")
+			}
+			b, err := readAt(r, child.start, int(child.end-child.start))
+			if err == nil {
+				body = append(body, b...)
+			}
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	for _, field := range riffInfoFields {
+		if s := changes[field.id]; s != "" {
+			body = appendChunk(body, field.id, append([]byte(s), 0), false)
+		}
+	}
+	return body, nil
+}
+
+// WriteWAV edits RIFF INFO fields and uses a sibling ID3 chunk for artwork and
+// fields without a RIFF INFO mapping. Untouched chunks are copied verbatim.
+func WriteWAV(path string, opts WriteOptions) error {
+	if !hasTagEdits(opts) {
+		return ErrUnsupportedWrite
+	}
+	return atomicRewrite(path, WAV, func(src, dst *os.File, size int64) error {
+		h, err := readAt(src, 0, 12)
+		if err != nil {
+			return err
+		}
+		if string(h[:4]) != "RIFF" || string(h[8:]) != "WAVE" || int64(binary.LittleEndian.Uint32(h[4:8])) != size-8 {
+			return unsupportedLayout("WAVE RIFF size or subtype")
+		}
+		if _, err := dst.Write(h); err != nil {
+			return err
+		}
+		changes := riffTextOptions(id3Options(opts, FieldLyrics))
+		var info, id3 fileChunk
+		var metadataChunks []fileChunk
+		var hasFormat, hasData bool
+		err = walkChunks(src, 12, size, false, func(c fileChunk) error {
+			switch c.id {
+			case "fmt ":
+				hasFormat = true
+			case "data":
+				hasData = true
+			case "LIST":
+				if c.size < 4 {
+					return io.ErrUnexpectedEOF
+				}
+				t, err := readAt(src, c.data, 4)
+				if err != nil {
+					return err
+				}
+				switch string(t) {
+				case "INFO":
+					if info.id != "" {
+						return unsupportedLayout("multiple WAVE INFO chunks")
+					}
+					info = c
+					metadataChunks = append(metadataChunks, c)
+					return nil
+				case "wavl":
+					return unsupportedLayout("segmented WAVE data")
+				}
+			case "ID3 ", "id3 ", "id3\x00":
+				if id3.id != "" {
+					return unsupportedLayout("multiple WAVE ID3 chunks")
+				}
+				id3 = c
+				metadataChunks = append(metadataChunks, c)
+				return nil
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		if !hasData || !hasFormat {
+			return errors.New("missing WAVE format or data")
+		}
+		// Reuse the trailing metadata area when possible. Earlier tag chunks
+		// become JUNK so cue and sample offsets never move.
+		tail := size
+		for len(metadataChunks) > 0 && metadataChunks[len(metadataChunks)-1].end == tail {
+			tail = metadataChunks[len(metadataChunks)-1].start
+			metadataChunks = metadataChunks[:len(metadataChunks)-1]
+		}
+		if err := copySection(dst, src, 12, tail-12); err != nil {
+			return err
+		}
+		for _, c := range metadataChunks {
+			if _, err := dst.WriteAt([]byte("JUNK"), c.start); err != nil {
+				return err
+			}
+		}
+
+		if info.id != "" || len(changes) > 0 {
+			body, err := editRIFFInfo(src, info, changes)
+			if err != nil {
+				return err
+			}
+			if _, err := dst.Write(appendChunk(nil, "LIST", body, false)); err != nil {
+				return err
+			}
+		}
+		id3Opts := opts
+		id3Opts.ClearFields = slices.Clone(opts.ClearFields)
+		for _, field := range riffInfoFields {
+			if _, edited := changes[field.id]; edited {
+				id3Opts = id3Options(id3Opts, field.field)
+				id3Opts.ClearFields = append(id3Opts.ClearFields, field.field)
+			}
+		}
+		if id3.id != "" || opts.Picture != nil || opts.Disc != "" || opts.Language != "" || opts.Style != "" || opts.AlbumArtist != "" || opts.Lyrics != "" || len(opts.CustomTags) > 0 {
+			old, err := readID3Block(src, id3.data, id3.size)
+			if err != nil {
+				return err
+			}
+			body, err := updateID3Block(old, id3Opts)
+			if err != nil {
+				return err
+			}
+			if _, err := dst.Write(appendChunk(nil, "id3 ", body, false)); err != nil {
+				return err
+			}
+		}
+		end, err := dst.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return err
+		}
+		if end-8 > math.MaxUint32 {
+			return unsupportedLayout("WAVE RIFF size limit")
+		}
+		_, err = dst.WriteAt(binary.LittleEndian.AppendUint32(nil, uint32(end-8)), 4)
+		return err
+	})
 }

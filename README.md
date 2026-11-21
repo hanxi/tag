@@ -2,7 +2,7 @@
 
 [![GoDoc](https://pkg.go.dev/badge/github.com/hanxi/tag)](https://pkg.go.dev/github.com/hanxi/tag)
 
-This package provides MP3 (ID3v1,2.{2,3,4}), MP4 (AAC, M4A, ALAC), OGG, Opus, FLAC, WAV, Monkey's Audio (APE), AIFF/AIFF-C, DSF (DSD), and Matroska (.mka/.mkv) metadata detection, parsing and artwork extraction. It also supports **writing** tags back to MP3 (ID3v2.3), FLAC (Vorbis Comment + Picture), M4A/MP4/M4B/M4V/MOV/3GP (iTunes atoms), OGG/OGA/Opus (Vorbis Comment), APE (APEv2 footer), WAV (RIFF LIST INFO), and AIFF/AIF (ID3v2.3 chunk).
+This package provides MP3 (ID3v1,2.{2,3,4}), MP4 (AAC, M4A, ALAC), OGG, Opus, FLAC, WAV, Monkey's Audio (APE), AIFF/AIFF-C, DSF (DSD), and Matroska (.mka/.mkv) metadata detection, parsing and artwork extraction. The table below includes the additional audio and video containers and the boundaries of their writers.
 
 > Forked from upstream and extended with encoding detection improvements plus multi-format tag writers used by Songloft.
 
@@ -42,19 +42,23 @@ err := tag.WriteTag("song.mp3", tag.WriteOptions{
 })
 ```
 
-Format dispatch is by file extension:
+Container dispatch uses file contents. Incremental writers preserve unspecified fields and use `WriteOptions.ClearFields` for explicit clears. `ErrUnsupportedWrite` identifies fields or layouts that require application-level storage.
 
-| Extension | Status | Frames / blocks written |
-|-----------|--------|--------------------------|
-| `.mp3` | ✅ ID3v2.3 | TIT2 / TPE1 / TPE2 / TALB / TYER / TCON / USLT / APIC |
-| `.flac` | ✅ Vorbis Comment + PICTURE | TITLE / ARTIST / ALBUMARTIST / ALBUM / DATE / GENRE / LYRICS + Picture(Front) |
-| `.m4a` / `.mp4` / `.m4b` / `.m4v` / `.mov` / `.3gp` | ✅ iTunes atoms | ©nam / ©ART / aART / ©alb / ©day / ©gen / ©lyr / covr |
-| `.ogg` / `.oga` / `.opus` | ✅ Vorbis Comment | TITLE / ARTIST / ALBUMARTIST / ALBUM / DATE / GENRE / LYRICS + METADATA_BLOCK_PICTURE |
-| `.ape` | ✅ APEv2 | Title / Artist / Album / Year / Genre / Lyrics / Cover Art (Front) |
-| `.wav` | ✅ RIFF LIST INFO | INAM / IART / IPRD / ICRD / IGNR / ICMT |
-| `.aif` / `.aiff` | ✅ ID3v2.3 (ID3 chunk) | TIT2 / TPE1 / TPE2 / TALB / TYER / TCON / USLT / APIC + NAME / AUTH |
-
-Other extensions return `ErrUnsupportedWrite`. Callers should treat tag-write failures as non-fatal (log + continue).
+| Container | Read metadata | Native write |
+|---|---|---|
+| MP3, FLAC, Ogg/Opus, APE, AIFF | Text, lyrics, artwork | Existing ID3, Vorbis, APEv2 and AIFF writers |
+| MP4/M4A/M4B/M4V/3GP | iTunes text, numbers, lyrics, artwork | Existing iTunes metadata writer |
+| QuickTime MOV | Legacy and iTunes text, numbers, lyrics, artwork | iTunes metadata in supported unfragmented layouts |
+| DSF, ADTS AAC | ID3v2 text, numbers, lyrics, artwork | Incremental ID3v2.3/2.4 |
+| WavPack | APEv2 text, numbers, lyrics, artwork | Incremental APEv2 |
+| WAV | INFO titles, artists, albums, years, genres, tracks and comments. ID3v2 fields, lyrics and artwork | RIFF INFO and ID3v2.3/2.4 |
+| DSDIFF | DIIN title/artist, compatible ID3 and DSD/DST stream parameters | DIIN title/artist with preserved index offsets |
+| Matroska/WebM | Primary audio tags, numbers and lyrics. Matroska cover attachments | Primary audio tags. Matroska supports attaching or replacing a cover |
+| ASF | Content Description and mapped Extended Content Description, including front cover | Existing mapped text or integer slots in the original header extent |
+| AVI | RIFF INFO fields, including OpenDML | RIFF INFO text and track in a compatible single RIFF segment |
+| FLV | AMF0 `onMetaData` fields | Existing strings with unchanged byte length |
+| RealMedia | CONT title, author, copyright and comment | Title and author within the original CONT object |
+| DTS/DTS-HD, MPEG-TS/PS | DTS stream parameters, MPEG service and stream descriptors | Application-level storage |
 
 Parsed metadata is exported via a single interface (giving a consistent API for all supported metadata formats).
 

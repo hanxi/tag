@@ -7,6 +7,7 @@ package tag
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +35,8 @@ type WriteOptions struct {
 	Track       string            // Track number, "3" or "3/12" (number/total); empty skips the field
 	Disc        string            // Disc number, "1" or "1/2" (number/total); empty skips the field
 	Picture     *Picture          // Cover art (MIMEType + Data required; Description optional)
+	Incremental bool              // Skip legacy rebuild writers that cannot preserve unspecified fields.
+	ClearFields []string          // Explicitly remove fields in incremental writers.
 	CustomTags  map[string]string // User-defined tags: key→value. Written as TXXX (MP3), Vorbis Comment (FLAC/OGG), freeform atom (M4A), APEv2 item (APE).
 }
 
@@ -51,58 +54,126 @@ func splitTrack(s string) (number, total string) {
 	return s, ""
 }
 
-// WriteTag writes the supplied metadata into the music file at filePath.
-//
-// The format is selected by file extension. Supported formats and their tag mappings:
-//
-//	Format          | Text fields              | Lyrics      | Picture
-//	.mp3                | ID3v2.3 text frames      | USLT        | APIC
-//	.flac               | Vorbis Comment           | LYRICS      | PICTURE block
-//	.m4a/.mp4/.m4b/.m4v/.mov/.3gp | iTunes atoms (©nam etc) | ©lyr  | covr
-//	.ogg/.oga/.opus | Vorbis Comment           | LYRICS      | METADATA_BLOCK_PICTURE
-//	.ape            | APEv2 items              | Lyrics      | Cover Art (Front) (binary)
-//	.wav            | RIFF LIST INFO           | ICMT        | (not supported)
-//
-// Returns ErrUnsupportedWrite for other extensions. The original file is
-// rewritten atomically (write to a sibling temp file then rename).
+// WriteTag writes metadata to the container identified from the file header.
+// Incremental writers preserve fields omitted in opts. ErrUnsupportedWrite
+// indicates that the requested fields or container layout require database
+// storage. Advanced writers validate a sibling file before atomic replacement.
 func WriteTag(filePath string, opts WriteOptions) error {
-	// Older databases and callers have no disc field. Preserve an existing
-	// disc tag when they rewrite metadata before the next full rescan.
-	if opts.Disc == "" {
-		if f, err := os.Open(filePath); err == nil {
-			if metadata, err := ReadFrom(f); err == nil {
-				number, total := metadata.Disc()
-				if number > 0 {
-					opts.Disc = fmt.Sprint(number)
-					if total > 0 {
-						opts.Disc += "/" + fmt.Sprint(total)
-					}
-				}
-			}
-			_ = f.Close()
-		}
+	f, err := os.Open(filePath)
+	if err != nil {
+		return err
 	}
-	ext := strings.ToLower(filepath.Ext(filePath))
-	switch ext {
-	case ".mp3":
-		return WriteID3v2(filePath, opts)
-	case ".flac":
-		return WriteFLAC(filePath, opts)
-	case ".ape":
-		return WriteAPE(filePath, opts)
-	case ".wav":
+	h := make([]byte, 12)
+	_, err = io.ReadFull(f, h)
+	_ = f.Close()
+	if err != nil {
+		return fmt.Errorf("%w: incomplete file header", ErrUnsupportedWrite)
+	}
+	switch {
+	case looksLikeMP4(h):
+		if opts.Incremental || strings.EqualFold(filepath.Ext(filePath), ".mov") || isQuickTimeFile(filePath) {
+			return writeQuickTime(filePath, opts)
+		}
+		if string(h[4:8]) == "ftyp" {
+			return WriteMP4(filePath, withLegacyDisc(filePath, opts))
+		}
+	case string(h[:4]) == "RIFF" && string(h[8:12]) == "AVI ":
+		return writeAVI(filePath, opts)
+	case string(h[:4]) == asfHeader[:4]:
+		return writeFixedText(filePath, ASF, opts, readASF, FieldTitle, FieldArtist, FieldAlbum, FieldAlbumArtist, FieldYear, FieldGenre, FieldLanguage, FieldStyle, FieldTrack, FieldDisc, FieldLyrics)
+	case string(h[:3]) == "FLV":
+		return writeFixedText(filePath, FLV, opts, readFLV, FieldTitle, FieldArtist, FieldAlbum, FieldAlbumArtist, FieldYear, FieldGenre, FieldLanguage, FieldStyle, FieldTrack, FieldDisc, FieldLyrics)
+	case string(h[:4]) == ".RMF":
+		return writeFixedText(filePath, RM, opts, readRealMedia, FieldTitle, FieldArtist)
+
+	case string(h[:4]) == "DSD ":
+		return writeDSF(filePath, opts)
+	case string(h[:4]) == "wvpk":
+		return writeWavPack(filePath, opts)
+	case string(h[:4]) == "RIFF" && string(h[8:12]) == "WAVE":
 		return WriteWAV(filePath, opts)
-	case ".m4a", ".mp4", ".m4b", ".m4v", ".mov", ".3gp":
-		// ISO-BMFF 容器家族（MP4/M4A/M4B/M4V/MOV/3GP），共用 moov>udta>meta>ilst
-		// iTunes atoms。WriteMP4 兼容两种 meta 布局:标准 FullBox(带 version/flags)
-		// 与老式纯 QuickTime bare meta(不带前缀,如部分 bilibili 下载源),读取时按
-		// 实际布局定位子 atom,写回统一归一化为标准 FullBox。
-		return WriteMP4(filePath, opts)
-	case ".ogg", ".oga", ".opus":
+	case isDTS(h), string(h[:4]) == "\x00\x00\x01\xba":
+		return ErrUnsupportedWrite
+	case isADTSHeader(h):
+		return writeADTS(filePath, opts)
+	case string(h[:3]) == "ID3":
+		switch id3PayloadSignature(filePath, h) {
+		case "aac":
+			return writeADTS(filePath, opts)
+		case "flac":
+			if !opts.Incremental {
+				return WriteFLAC(filePath, withLegacyDisc(filePath, opts))
+			}
+		}
+	case string(h[:4]) == "\x1a\x45\xdf\xa3":
+		return writeMatroska(filePath, opts)
+	case string(h[:4]) == "FRM8":
+		return writeDSDIFF(filePath, opts)
+	}
+
+	if opts.Incremental {
+		return ErrUnsupportedWrite
+	}
+	opts = withLegacyDisc(filePath, opts)
+	switch {
+	case string(h[:3]) == "ID3" || h[0] == 0xff && h[1]&0xe0 == 0xe0:
+		return WriteID3v2(filePath, opts)
+	case string(h[:4]) == "fLaC":
+		return WriteFLAC(filePath, opts)
+	case string(h[:4]) == "MAC ":
+		return WriteAPE(filePath, opts)
+	case string(h[:4]) == "OggS":
 		return WriteOGG(filePath, opts)
-	case ".aif", ".aiff":
+	case string(h[:4]) == "FORM" && (string(h[8:12]) == "AIFF" || string(h[8:12]) == "AIFC"):
 		return WriteAIFF(filePath, opts)
 	default:
-		return fmt.Errorf("%w: %s", ErrUnsupportedWrite, ext)
+		return ErrUnsupportedWrite
 	}
+}
+
+// Older databases and rebuild callers omit disc; preserve the value in the file.
+func withLegacyDisc(path string, opts WriteOptions) WriteOptions {
+	if opts.Disc != "" {
+		return opts
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return opts
+	}
+	defer f.Close()
+	m, err := ReadFrom(f)
+	if err != nil {
+		return opts
+	}
+	number, total := m.Disc()
+	if number > 0 {
+		opts.Disc = fmt.Sprint(number)
+		if total > 0 {
+			opts.Disc += "/" + fmt.Sprint(total)
+		}
+	}
+	return opts
+}
+
+func id3PayloadSignature(path string, head []byte) string {
+	offset, err := id3BlockSize(head)
+	if err != nil {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	b, err := readAt(f, int64(offset), 7)
+	if err != nil {
+		return ""
+	}
+	if isADTSHeader(b) {
+		return "aac"
+	}
+	if string(b[:4]) == "fLaC" {
+		return "flac"
+	}
+	return ""
 }

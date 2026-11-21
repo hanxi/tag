@@ -139,131 +139,73 @@ func ReadAPEMeta(r io.ReadSeeker) (Metadata, error) {
 		duration:      duration,
 	}
 
-	// --- Parse APEv2 footer ---
-	if fileSize < 32 {
-		return m, nil
-	}
-
-	footerPos := fileSize - 32
-	if _, err := r.Seek(footerPos, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("seek to ape footer: %w", err)
-	}
-
-	footerID, err := readString(r, 8)
+	_, _, items, err := readAPETail(r, fileSize, true)
 	if err != nil {
+		// A damaged legacy tag does not invalidate Monkey's Audio stream information.
 		return m, nil
 	}
-	if footerID != "APETAGEX" {
-		return m, nil
+	for _, item := range items {
+		m.applyAPEItem(item.key, item.flags, item.value)
 	}
-
-	if _, err := readUint32LittleEndian(r); err != nil { // version
-		return m, nil
-	}
-	tagSize, err := readUint32LittleEndian(r)
-	if err != nil {
-		return m, nil
-	}
-	itemCount, err := readUint32LittleEndian(r)
-	if err != nil {
-		return m, nil
-	}
-	if _, err := readUint32LittleEndian(r); err != nil { // flags
-		return m, nil
-	}
-
-	// APEv2 spec: tagSize includes footer (32 bytes) + all items, excluding header.
-	// Items start at: fileSize - tagSize
-	tagStart := fileSize - int64(tagSize)
-	if tagStart < 0 {
-		return m, nil
-	}
-	if _, err := r.Seek(tagStart, io.SeekStart); err != nil {
-		return m, nil
-	}
-
-	for i := uint32(0); i < itemCount; i++ {
-		valueSize, err := readUint32LittleEndian(r)
-		if err != nil {
-			break
-		}
-		itemFlags, err := readUint32LittleEndian(r)
-		if err != nil {
-			break
-		}
-
-		var keyBytes []byte
-		for {
-			b := make([]byte, 1)
-			if _, err := io.ReadFull(r, b); err != nil {
-				break
-			}
-			if b[0] == 0 {
-				break
-			}
-			keyBytes = append(keyBytes, b[0])
-		}
-		key := string(keyBytes)
-		if key == "" {
-			break
-		}
-
-		value := make([]byte, valueSize)
-		if _, err := io.ReadFull(r, value); err != nil {
-			break
-		}
-
-		// APEv2 item flags bits 1-2: 0=text, 1=binary, 2=external
-		isBinary := (itemFlags>>1)&0x03 == 1
-
-		if isBinary && strings.ToLower(key) == "cover art (front)" {
-			// 二进制封面：[filename\0][image data]
-			if nullIdx := bytes.IndexByte(value, 0); nullIdx >= 0 && nullIdx+1 < len(value) {
-				imgData := value[nullIdx+1:]
-				mime := "image/jpeg"
-				if bytes.HasPrefix(imgData, pngHeader) {
-					mime = "image/png"
-				}
-				m.picture = &Picture{Data: imgData, MIMEType: mime}
-			}
-			continue
-		}
-
-		valueStr := fixEncoding(value)
-		switch strings.ToLower(key) {
-		case "title":
-			m.title = valueStr
-		case "artist":
-			m.artist = valueStr
-		case "album artist":
-			m.albumArtist = valueStr
-		case "album":
-			m.album = valueStr
-		case "year":
-			if y, err := strconv.Atoi(valueStr); err == nil {
-				m.year = y
-			}
-		case "genre":
-			m.genre = valueStr
-		case "language":
-			m.language = valueStr
-		case "style":
-			m.style = valueStr
-		case "track":
-			m.track = valueStr
-		case "disc", "discnumber":
-			m.disc = valueStr
-		case "lyrics":
-			m.lyrics = valueStr
-		case "comment":
-			m.comment = valueStr
-		}
-	}
-
 	return m, nil
 }
 
+func (m *metadataAPE) applyAPEItem(key string, flags uint32, value []byte) {
+	if flags&6 == 0 {
+		if m.raw == nil {
+			m.raw = make(map[string]interface{})
+		}
+		m.raw[key] = fixEncoding(value)
+	}
+	// APEv2 item flags bits 1-2: 0=text, 1=binary, 2=external
+	isBinary := (flags>>1)&0x03 == 1
+
+	if isBinary && strings.ToLower(key) == "cover art (front)" {
+		// 二进制封面：[filename\0][image data]
+		if nullIdx := bytes.IndexByte(value, 0); nullIdx >= 0 && nullIdx+1 < len(value) {
+			imgData := value[nullIdx+1:]
+			mime, ext := "image/jpeg", "jpg"
+			if bytes.HasPrefix(imgData, pngHeader) {
+				mime, ext = "image/png", "png"
+			}
+			m.picture = &Picture{Data: imgData, MIMEType: mime, Ext: ext}
+		}
+		return
+	}
+
+	valueStr := fixEncoding(value)
+	switch strings.ToLower(key) {
+	case "title":
+		m.title = valueStr
+	case "artist":
+		m.artist = valueStr
+	case "album artist":
+		m.albumArtist = valueStr
+	case "album":
+		m.album = valueStr
+	case "year":
+		if y, err := strconv.Atoi(valueStr); err == nil {
+			m.year = y
+		}
+	case "genre":
+		m.genre = valueStr
+	case "language":
+		m.language = valueStr
+	case "style":
+		m.style = valueStr
+	case "track":
+		m.track = valueStr
+	case "disc", "discnumber":
+		m.disc = valueStr
+	case "lyrics":
+		m.lyrics = valueStr
+	case "comment":
+		m.comment = valueStr
+	}
+}
+
 type metadataAPE struct {
+	raw           map[string]interface{}
 	title         string
 	artist        string
 	albumArtist   string
@@ -314,9 +256,13 @@ func (m *metadataAPE) BitRate() int {
 }
 
 func (m *metadataAPE) Raw() map[string]interface{} {
-	return map[string]interface{}{
+	result := map[string]interface{}{
 		"sample_rate":     m.sampleRate,
 		"channels":        m.channels,
 		"bits_per_sample": m.bitsPerSample,
 	}
+	for k, v := range m.raw {
+		result[k] = v
+	}
+	return result
 }
