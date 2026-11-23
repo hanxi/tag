@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"os"
 	"slices"
 	"strings"
 	"unicode/utf16"
@@ -54,6 +55,39 @@ func readOptionalID3(r io.ReadSeeker, offset, size int64) (*metadataID3v2, error
 type rawID3Frame struct {
 	id  string
 	raw []byte
+}
+
+func writeMP3Incremental(path string, opts WriteOptions) error {
+	return atomicRewrite(path, MP3, func(src, dst *os.File, size int64) error {
+		offset, err := id3v2AudioOffset(src)
+		if err != nil {
+			return err
+		}
+		if offset > size-4 {
+			return unsupportedLayout("missing MPEG audio payload")
+		}
+		head, err := readAt(src, offset, 4)
+		if err != nil {
+			return err
+		}
+		// An ID3 prefix can also appear on non-MP3 containers.
+		if head[0] != 0xff || head[1]&0xe0 != 0xe0 || head[1]&0x18 == 0x08 ||
+			head[1]&0x06 == 0 || head[2]&0xf0 == 0xf0 || head[2]&0x0c == 0x0c {
+			return unsupportedLayout("unknown ID3 payload")
+		}
+		old, err := readID3Block(src, 0, offset)
+		if err != nil {
+			return err
+		}
+		edited, err := updateID3Block(old, opts)
+		if err != nil {
+			return err
+		}
+		if _, err := dst.Write(edited); err != nil {
+			return err
+		}
+		return copySection(dst, src, offset, size-offset)
+	})
 }
 
 func splitID3Frames(data []byte, version byte) ([]rawID3Frame, error) {

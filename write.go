@@ -101,9 +101,7 @@ func WriteTag(filePath string, opts WriteOptions) error {
 		case "aac":
 			return writeADTS(filePath, opts)
 		case "flac":
-			if !opts.Incremental {
-				return WriteFLAC(filePath, withLegacyDisc(filePath, opts))
-			}
+			return WriteFLAC(filePath, withLegacyDisc(filePath, opts))
 		}
 	case string(h[:4]) == "\x1a\x45\xdf\xa3":
 		return writeMatroska(filePath, opts)
@@ -112,7 +110,14 @@ func WriteTag(filePath string, opts WriteOptions) error {
 	}
 
 	if opts.Incremental {
-		return ErrUnsupportedWrite
+		switch {
+		case string(h[:4]) == "fLaC":
+			return WriteFLAC(filePath, opts)
+		case string(h[:3]) == "ID3" || h[0] == 0xff && h[1]&0xe0 == 0xe0:
+			return writeMP3Incremental(filePath, opts)
+		default:
+			return ErrUnsupportedWrite
+		}
 	}
 	opts = withLegacyDisc(filePath, opts)
 	switch {

@@ -34,6 +34,9 @@ const (
 //  3. 用 opts 构造新的 VORBIS_COMMENT 块和 PICTURE 块
 //  4. 重新写文件:[fLaC][保留块][新 vc][新 picture][audio frames]
 func WriteFLAC(filePath string, opts WriteOptions) error {
+	if opts.Incremental {
+		return writeFLACIncremental(filePath, opts)
+	}
 	src, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("open flac: %w", err)
