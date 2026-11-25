@@ -170,20 +170,22 @@ func readWavPack(r io.ReadSeeker) (Metadata, error) {
 	return metadataWavPack{m}, nil
 }
 
-func writeWavPack(path string, opts WriteOptions) error {
+func writeAPEv2(path string, kind FileType, opts WriteOptions) error {
 	if !hasTagEdits(opts) {
 		return ErrUnsupportedWrite
 	}
-	return atomicRewrite(path, WV, func(src, dst *os.File, size int64) error {
-		end, trailer, old, err := readAPETail(src, size, false)
+	return atomicRewrite(path, kind, func(src, dst *os.File, size int64) error {
+		end, trailer, old, err := readAPETail(src, size, kind == APE)
 		if err != nil {
 			return err
 		}
-		if _, _, err := readWavPackBlocks(src, end); err != nil {
-			return err
+		if kind == WV {
+			if _, _, err := readWavPackBlocks(src, end); err != nil {
+				return err
+			}
 		}
 		// A second tag with legacy values could resurrect explicitly cleared fields.
-		if trailer != size && len(opts.ClearFields) != 0 {
+		if kind == WV && trailer != size && len(opts.ClearFields) != 0 {
 			return unsupportedLayout("WavPack with legacy ID3v1")
 		}
 		built, count := buildAPEv2Items(opts)
@@ -201,6 +203,13 @@ func writeWavPack(path string, opts WriteOptions) error {
 		changed := make(map[string]bool)
 		for _, item := range items {
 			changed[key(item.key)] = true
+		}
+		if opts.Incremental {
+			for name := range opts.CustomTags {
+				if name != "" {
+					changed[key(name)] = true
+				}
+			}
 		}
 		for _, field := range opts.ClearFields {
 			switch field {

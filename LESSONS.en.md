@@ -13,3 +13,10 @@
 - A generated MKV with video, two audio tracks, two chapters, and a text attachment stored a short seek position for its original Tags element. Appending replacement tags moved the target beyond that integer width.
 - Reuse the Void immediately following SeekHead to preserve its location while expanding the position. Recompute the index CRC and retain media offsets. FFprobe confirmed matching audio and video packet hashes and seek results, unchanged chapters and second audio track, and both the old attachment and new cover.
 - Seen 1× (2026-11-21).
+
+## TAG-003: Verify tag writes at container boundaries and after decoding
+
+- Scope: [songloft-org/songloft#596](https://github.com/songloft-org/songloft/issues/596), baseline `146a98e`.
+- Evidence: Ogg tags that cross page boundaries require preserving both media packets and their position semantics. Upgrading the tags in a real APEv1 sample changed the final packet extent reported by FFprobe. The 1,477,032 bytes preceding the tags and the SHA-256 of the decoded PCM were identical.
+- Verification: Grow and shrink lyrics across Ogg Vorbis and Opus pages, then compare all audio packet hashes in FFprobe. Preserve raw APE items and check the audio region, decoded PCM and tags independently. Check AIFF and AIFF-C packet hashes and title readback.
+- Seen 1× (2026-11-25).

@@ -19,6 +19,9 @@ import (
 //  4. Appends the new items + APETAGEX footer
 //  5. Writes atomically via temp file + rename
 func WriteAPE(filePath string, opts WriteOptions) error {
+	if opts.Incremental {
+		return writeAPEv2(filePath, APE, opts)
+	}
 	original, err := os.ReadFile(filePath)
 	if err != nil {
 		return fmt.Errorf("read ape file: %w", err)

@@ -23,6 +23,9 @@ import (
 //  4. 重新分页 header packets，逐页复制音频数据（更新 sequence + CRC）
 //  5. 原子写入临时文件后 rename
 func WriteOGG(filePath string, opts WriteOptions) error {
+	if opts.Incremental {
+		return writeOGGIncremental(filePath, opts)
+	}
 	src, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("open ogg: %w", err)
@@ -174,7 +177,7 @@ func readOneOGGPage(r io.Reader) (oggPage, error) {
 
 	segTable := make([]byte, hdr.Segments)
 	if _, err := io.ReadFull(r, segTable); err != nil {
-		return oggPage{}, err
+		return oggPage{}, io.ErrUnexpectedEOF
 	}
 	var totalSize int
 	for _, s := range segTable {
@@ -182,13 +185,19 @@ func readOneOGGPage(r io.Reader) (oggPage, error) {
 	}
 	segData := make([]byte, totalSize)
 	if _, err := io.ReadFull(r, segData); err != nil {
-		return oggPage{}, err
+		return oggPage{}, io.ErrUnexpectedEOF
 	}
 
 	raw := make([]byte, 0, headerBuf.Len()+len(segTable)+len(segData))
 	raw = append(raw, headerBuf.Bytes()...)
 	raw = append(raw, segTable...)
 	raw = append(raw, segData...)
+	binary.LittleEndian.PutUint32(raw[22:26], 0)
+	crc := oggCRCUpdate(0, oggCRC32Poly04c11db7, raw)
+	if hdr.Version != 0 || crc != hdr.CRC {
+		return oggPage{}, fmt.Errorf("invalid Ogg page version or checksum")
+	}
+	binary.LittleEndian.PutUint32(raw[22:26], hdr.CRC)
 
 	return oggPage{header: hdr, segmentTable: segTable, segmentData: segData, raw: raw}, nil
 }
@@ -239,40 +248,25 @@ func buildOGGCommentPacket(opts WriteOptions, isOpus bool) []byte {
 		buf.Write(vorbisCommentPrefix) // \x03vorbis
 	}
 	buf.Write(vc)
+	if !isOpus {
+		buf.WriteByte(1)
+	}
 	return buf.Bytes()
 }
 
 // buildOGGVorbisComment 构建 Vorbis Comment 二进制体（与 FLAC 共用格式），
 // 支持 METADATA_BLOCK_PICTURE。
 func buildOGGVorbisComment(opts WriteOptions) []byte {
-	// 先用基础的 buildFLACVorbisComment 但需要加上 picture
-	if opts.Picture == nil || len(opts.Picture.Data) == 0 {
-		return buildFLACVorbisComment(opts)
-	}
+	return encodeVorbisComments("songloft", collectOGGComments(opts))
+}
 
-	// 有 picture：手动构建，加入 METADATA_BLOCK_PICTURE comment
-	picBlock := buildFLACPicture(opts.Picture)
-	picB64 := base64.StdEncoding.EncodeToString(picBlock)
-
-	// 构建带 picture 的 vorbis comment
-	var buf bytes.Buffer
-	vendor := "songloft"
-	var lenBuf [4]byte
-	binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(vendor)))
-	buf.Write(lenBuf[:])
-	buf.WriteString(vendor)
-
+func collectOGGComments(opts WriteOptions) []string {
 	comments := collectVorbisComments(opts)
-	comments = append(comments, "METADATA_BLOCK_PICTURE="+picB64)
-
-	binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(comments)))
-	buf.Write(lenBuf[:])
-	for _, c := range comments {
-		binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(c)))
-		buf.Write(lenBuf[:])
-		buf.WriteString(c)
+	if opts.Picture != nil && len(opts.Picture.Data) != 0 {
+		picture := buildFLACPicture(opts.Picture)
+		comments = append(comments, "METADATA_BLOCK_PICTURE="+base64.StdEncoding.EncodeToString(picture))
 	}
-	return buf.Bytes()
+	return comments
 }
 
 func collectVorbisComments(opts WriteOptions) []string {
@@ -360,7 +354,14 @@ func pageHeaderPackets(packets [][]byte, serial uint32) [][]byte {
 			flags |= 0x01 // continued packet
 		}
 
-		page := serializeOGGPage(serial, seq, 0, flags, thisSegTable, allData[dataPos:dataPos+thisDataSize])
+		granule := ^uint64(0)
+		for _, segment := range thisSegTable {
+			if segment < 255 {
+				granule = 0
+				break
+			}
+		}
+		page := serializeOGGPage(serial, seq, granule, flags, thisSegTable, allData[dataPos:dataPos+thisDataSize])
 		result = append(result, page)
 
 		prevLastSeg = thisSegTable[len(thisSegTable)-1]

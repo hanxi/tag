@@ -15,13 +15,20 @@ type flacMetadataBlock struct {
 
 func writeFLACIncremental(path string, opts WriteOptions) error {
 	return atomicRewrite(path, FLAC, func(src, dst *os.File, size int64) error {
+		prefix, err := id3v2AudioOffset(src)
+		if err != nil || prefix > min(size-4, maxMetadataSize) {
+			return unsupportedLayout("FLAC prefix size")
+		}
+		if _, err := src.Seek(prefix, io.SeekStart); err != nil {
+			return err
+		}
 		magic, err := readString(src, 4)
 		if err != nil || magic != "fLaC" {
 			return unsupportedLayout("FLAC with a foreign prefix")
 		}
 		var blocks []flacMetadataBlock
 		var editedComments bool
-		offset := int64(4)
+		offset := prefix + 4
 		for {
 			var head [4]byte
 			if _, err := io.ReadFull(src, head[:]); err != nil {
@@ -73,6 +80,9 @@ func writeFLACIncremental(path string, opts WriteOptions) error {
 		if opts.Picture != nil {
 			blocks = append(blocks, flacMetadataBlock{flacBlockPicture, buildFLACPicture(opts.Picture)})
 		}
+		if err := copySection(dst, src, 0, prefix); err != nil {
+			return err
+		}
 		if _, err := dst.WriteString(magic); err != nil {
 			return err
 		}
@@ -96,55 +106,60 @@ func writeFLACIncremental(path string, opts WriteOptions) error {
 	})
 }
 
-func readFLACComments(data []byte) (string, []string, error) {
+func parseVorbisComments(data []byte) (string, []string, []byte, error) {
 	r := bytes.NewReader(data)
 	n, err := readUint32LittleEndian(r)
 	if err != nil || uint64(n) > uint64(r.Len()) {
-		return "", nil, unsupportedLayout("FLAC comment vendor")
+		return "", nil, nil, unsupportedLayout("Vorbis comment vendor")
 	}
 	vendor, err := readString(r, uint(n))
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	count, err := readUint32LittleEndian(r)
 	if err != nil || uint64(count) > uint64(r.Len()/4) {
-		return "", nil, unsupportedLayout("FLAC comment count")
+		return "", nil, nil, unsupportedLayout("Vorbis comment count")
 	}
 	var comments []string
 	for range count {
 		n, err := readUint32LittleEndian(r)
 		if err != nil || uint64(n) > uint64(r.Len()) {
-			return "", nil, unsupportedLayout("FLAC comment length")
+			return "", nil, nil, unsupportedLayout("Vorbis comment length")
 		}
 		value, err := readString(r, uint(n))
 		if err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
 		comments = append(comments, value)
 	}
-	if r.Len() != 0 {
-		return "", nil, unsupportedLayout("trailing FLAC comment bytes")
-	}
-	return vendor, comments, nil
+	return vendor, comments, data[len(data)-r.Len():], nil
 }
 
 func mergeFLACComments(data []byte, opts WriteOptions) ([]byte, error) {
-	vendor, previous, err := readFLACComments(data)
+	vendor, previous, suffix, err := parseVorbisComments(data)
 	if err != nil {
 		return nil, err
 	}
-	_, edits, err := readFLACComments(buildFLACVorbisComment(opts))
-	if err != nil {
-		return nil, err
+	if len(suffix) != 0 {
+		return nil, unsupportedLayout("trailing FLAC comment bytes")
 	}
+	return encodeVorbisComments(vendor, mergeVorbisComments(previous, collectVorbisComments(opts), opts)), nil
+}
+
+func mergeVorbisComments(previous, edits []string, opts WriteOptions) []string {
 	changed := make(map[string]bool)
 	for _, comment := range edits {
 		key, _, _ := strings.Cut(comment, "=")
 		changed[strings.ToUpper(key)] = true
 	}
+	for key := range opts.CustomTags {
+		if key != "" {
+			changed[strings.ToUpper(key)] = true
+		}
+	}
 	aliases := map[string][]string{
 		FieldYear: {"DATE", "YEAR"}, FieldTrack: {"TRACKNUMBER", "TRACKTOTAL", "TOTALTRACKS"},
-		FieldDisc: {"DISCNUMBER", "DISCTOTAL", "TOTALDISCS"}, FieldAlbumArtist: {"ALBUMARTIST"},
+		FieldDisc: {"DISCNUMBER", "DISCTOTAL", "TOTALDISCS"}, FieldAlbumArtist: {"ALBUMARTIST", "ALBUM ARTIST"},
 		FieldPicture: {"METADATA_BLOCK_PICTURE", "COVERART", "COVERARTMIME"},
 	}
 	for field := range textEdits(opts) {
@@ -165,7 +180,10 @@ func mergeFLACComments(data []byte, opts WriteOptions) ([]byte, error) {
 			comments = append(comments, comment)
 		}
 	}
-	comments = append(comments, edits...)
+	return append(comments, edits...)
+}
+
+func encodeVorbisComments(vendor string, comments []string) []byte {
 	out := binary.LittleEndian.AppendUint32(nil, uint32(len(vendor)))
 	out = append(out, vendor...)
 	out = binary.LittleEndian.AppendUint32(out, uint32(len(comments)))
@@ -173,5 +191,5 @@ func mergeFLACComments(data []byte, opts WriteOptions) ([]byte, error) {
 		out = binary.LittleEndian.AppendUint32(out, uint32(len(comment)))
 		out = append(out, comment...)
 	}
-	return out, nil
+	return out
 }

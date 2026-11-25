@@ -217,7 +217,7 @@ func matroskaEdits(opts WriteOptions) map[string]string {
 		edits["DATE_RELEASED"] = strconv.Itoa(opts.Year)
 	}
 	for k, v := range opts.CustomTags {
-		if k != "" && v != "" {
+		if k != "" && (v != "" || opts.Incremental) {
 			edits[strings.ToUpper(k)] = v
 		}
 	}

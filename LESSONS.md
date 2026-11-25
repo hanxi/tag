@@ -13,3 +13,10 @@
 - 一份含视频、两条音轨、两个章节和文本附件的生成 MKV 采用较窄的 SeekPosition 指向旧 Tags。追加新标签后，位置超出了原字段宽度。
 - 复用 SeekHead 后的 Void 扩宽位置字段，保持索引起点与媒体偏移，重算索引 CRC。FFprobe 复读确认音视频包哈希与拖动结果一致，章节和第二音轨保留，旧附件与新封面可读取。
 - Seen 1× (2026-11-21)。
+
+## TAG-003：用容器边界与解码结果验证标签回写
+
+- 范围：[songloft-org/songloft#596](https://github.com/songloft-org/songloft/issues/596)，基线 `146a98e`。
+- 证据：Ogg 标签跨页后要保留媒体包的内容和位置语义。真实 APEv1 样本升级标签后，FFprobe 最后一个包的范围随尾部标签长度变化，标签之前的 1,477,032 字节和解码 PCM 的 SHA-256 均一致。
+- 验证：Ogg Vorbis/Opus 写入超过一页的歌词后再次缩短，用 FFprobe 比较全部音频包。APE 保留未编辑的原始标签项，使用音频区段、PCM 与独立标签读取验证。AIFF/AIFF-C 覆盖音频包与标题回读。
+- Seen 1× (2026-11-25)。

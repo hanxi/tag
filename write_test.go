@@ -5,6 +5,7 @@
 package tag
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -196,6 +197,25 @@ func TestWriteFLAC_RoundTrip(t *testing.T) {
 
 func TestWriteFLAC_WithID3v2Prefix(t *testing.T) {
 	path := copyFixture(t, "testdata/with_id3v2_prefix/sample.flac")
+
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offset, err := id3BlockSize(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteTag(path, WriteOptions{Incremental: true, Title: "Incremental title"}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := os.ReadFile(path)
+	if err != nil || !bytes.HasPrefix(updated, source[:offset]) {
+		t.Fatalf("incremental edit removed the ID3 prefix: %v", err)
+	}
+	if got := readBackMetadata(t, path).Title(); got != "Incremental title" {
+		t.Fatalf("incremental title = %q", got)
+	}
 
 	opts := WriteOptions{
 		Title:  "New Title",
@@ -569,6 +589,95 @@ func createMinimalAPE(t *testing.T) string {
 	binary.Write(f, binary.LittleEndian, uint32(44100)) // sampleRate
 
 	return f.Name()
+}
+
+func TestIncrementalReplacesOnlyRequestedTags(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		make func(*testing.T) string
+	}{
+		{"mp3", func(t *testing.T) string { return copyFixture(t, "testdata/without_tags/sample.mp3") }},
+		{"flac", func(t *testing.T) string { return copyFixture(t, "testdata/without_tags/sample.flac") }},
+		{"m4a", func(t *testing.T) string { return copyFixture(t, "testdata/without_tags/sample.m4a") }},
+		{"ogg", func(t *testing.T) string { return copyFixture(t, "testdata/without_tags/sample.ogg") }},
+		{"ape", createMinimalAPE},
+		{"apev1", createMinimalAPE},
+		{"aiff", func(t *testing.T) string {
+			path := filepath.Join(t.TempDir(), "song.aiff")
+			if err := os.WriteFile(path, createTestAIFF(44100, 1, 16, 100), 0600); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := tc.make(t)
+			const customKey, otherKey = "SONGLOFT_TAGS", "KEEP_ME"
+			picture := &Picture{MIMEType: "image/png", Data: pngHeader}
+			initial := WriteOptions{
+				Title: "Original", Artist: "Track artist", AlbumArtist: "Various Artists",
+				Track: "6/20", Disc: "2/3", Lyrics: "[00:01]old", Picture: picture,
+				CustomTags: map[string]string{customKey: "old label", otherKey: "keep value"},
+			}
+			if tc.name == "apev1" {
+				initial.Picture = nil
+			}
+			if err := WriteTag(path, initial); err != nil {
+				t.Fatal(err)
+			}
+			if tc.name == "apev1" {
+				tagged, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				binary.LittleEndian.PutUint32(tagged[len(tagged)-24:], 1000)
+				if err := os.WriteFile(path, tagged, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := WriteTag(path, WriteOptions{Incremental: true, Title: "Edited"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteTag(path, WriteOptions{Incremental: true, Lyrics: "[00:01]new", CustomTags: map[string]string{customKey: "new label"}}); err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(encoded, []byte("new label")) && !bytes.Contains(encoded, encodeUTF16LE("new label")) {
+				t.Fatal("new custom label was not written")
+			}
+			if err := WriteTag(path, WriteOptions{Incremental: true, CustomTags: map[string]string{customKey: ""}}); err != nil {
+				t.Fatal(err)
+			}
+			m := fileMetadata(t, path)
+			if m.Title() != "Edited" || m.Artist() != initial.Artist || m.AlbumArtist() != initial.AlbumArtist ||
+				m.Year() != 0 || m.Lyrics() != "[00:01]new" || (m.Picture() != nil) != (initial.Picture != nil) {
+				t.Fatalf("unexpected tags: title=%q artist=%q album artist=%q year=%d lyrics=%q artwork=%v",
+					m.Title(), m.Artist(), m.AlbumArtist(), m.Year(), m.Lyrics(), m.Picture() != nil)
+			}
+			if m.Picture() != nil && !bytes.Equal(m.Picture().Data, picture.Data) {
+				t.Fatal("unrelated artwork changed")
+			}
+			if n, total := m.Track(); n != 6 || total != 20 {
+				t.Fatalf("track = %d/%d", n, total)
+			}
+			if n, total := m.Disc(); n != 2 || total != 3 {
+				t.Fatalf("disc = %d/%d", n, total)
+			}
+			encoded, err = os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(encoded, []byte(customKey)) || bytes.Contains(encoded, encodeUTF16LE(customKey)) {
+				t.Fatal("cleared custom label is still present")
+			}
+			if !bytes.Contains(encoded, []byte("keep value")) && !bytes.Contains(encoded, encodeUTF16LE("keep value")) {
+				t.Fatal("unrelated custom tag was erased")
+			}
+		})
+	}
 }
 
 func TestWriteAPE_RoundTrip_WithPicture(t *testing.T) {

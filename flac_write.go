@@ -11,7 +11,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 )
 
 // FLAC 块类型常量(METADATA_BLOCK_HEADER 中 7 位的 block type)
@@ -190,68 +189,7 @@ func WriteFLAC(filePath string, opts WriteOptions) error {
 //
 // 与 RFC 推荐字段名保持一致(全大写)。
 func buildFLACVorbisComment(opts WriteOptions) []byte {
-	var buf bytes.Buffer
-	vendor := "songloft"
-	var lenBuf [4]byte
-	binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(vendor)))
-	buf.Write(lenBuf[:])
-	buf.WriteString(vendor)
-
-	comments := make([]string, 0, 8)
-	if opts.Title != "" {
-		comments = append(comments, "TITLE="+opts.Title)
-	}
-	if opts.Artist != "" {
-		comments = append(comments, "ARTIST="+opts.Artist)
-	}
-	if opts.AlbumArtist != "" {
-		comments = append(comments, "ALBUMARTIST="+opts.AlbumArtist)
-	}
-	if opts.Album != "" {
-		comments = append(comments, "ALBUM="+opts.Album)
-	}
-	if opts.Year > 0 {
-		comments = append(comments, "DATE="+strconv.Itoa(opts.Year))
-	}
-	if opts.Genre != "" {
-		comments = append(comments, "GENRE="+opts.Genre)
-	}
-	if opts.Language != "" {
-		comments = append(comments, "LANGUAGE="+opts.Language)
-	}
-	if opts.Style != "" {
-		comments = append(comments, "STYLE="+opts.Style)
-	}
-	if opts.Lyrics != "" {
-		comments = append(comments, "LYRICS="+opts.Lyrics)
-	}
-	for k, v := range opts.CustomTags {
-		if k != "" && v != "" {
-			comments = append(comments, k+"="+v)
-		}
-	}
-	// Vorbis 约定拆成 TRACKNUMBER / TRACKTOTAL 两个字段（阅读器分别解析）
-	if trackNum, trackTotal := splitTrack(opts.Track); trackNum != "" {
-		comments = append(comments, "TRACKNUMBER="+trackNum)
-		if trackTotal != "" {
-			comments = append(comments, "TRACKTOTAL="+trackTotal)
-		}
-	}
-	if discNum, discTotal := splitTrack(opts.Disc); discNum != "" {
-		comments = append(comments, "DISCNUMBER="+discNum)
-		if discTotal != "" {
-			comments = append(comments, "DISCTOTAL="+discTotal)
-		}
-	}
-
-	binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(comments)))
-	buf.Write(lenBuf[:])
-	for _, c := range comments {
-		binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(c)))
-		buf.Write(lenBuf[:])
-		buf.WriteString(c)
-	}
-	return buf.Bytes()
+	return encodeVorbisComments("songloft", collectVorbisComments(opts))
 }
 
 // buildFLACPicture 编码 PICTURE 块体(METADATA_BLOCK_PICTURE,大端)。

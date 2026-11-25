@@ -123,11 +123,21 @@ func mp4Field(r io.ReadSeeker, c fileChunk) (string, error) {
 			return nil
 		})
 		if domain == "com.apple.iTunes" {
-			return strings.ToLower(name), err
+			return mp4FreeformField(name), err
 		}
 		return "", err
 	}
 	return atoms[c.id], nil
+}
+
+func mp4FreeformField(name string) string {
+	name = strings.ToLower(name)
+	switch name {
+	case "", FieldLanguage, FieldStyle:
+		return name
+	default:
+		return "----:" + name
+	}
 }
 
 func writeQuickTime(path string, opts WriteOptions) error {
@@ -159,6 +169,11 @@ func writeQuickTime(path string, opts WriteOptions) error {
 		changed := make(map[string]bool)
 		for _, field := range opts.ClearFields {
 			changed[field] = true
+		}
+		if opts.Incremental {
+			for name := range opts.CustomTags {
+				changed[mp4FreeformField(name)] = true
+			}
 		}
 		err = walkMP4(bytes.NewReader(additions), 0, int64(len(additions)), func(c fileChunk) error {
 			field, err := mp4Field(bytes.NewReader(additions), c)

@@ -37,7 +37,7 @@ type WriteOptions struct {
 	Picture     *Picture          // Cover art (MIMEType + Data required; Description optional)
 	Incremental bool              // Skip legacy rebuild writers that cannot preserve unspecified fields.
 	ClearFields []string          // Explicitly remove fields in incremental writers.
-	CustomTags  map[string]string // User-defined tags: key→value. Written as TXXX (MP3), Vorbis Comment (FLAC/OGG), freeform atom (M4A), APEv2 item (APE).
+	CustomTags  map[string]string // User-defined tags. An empty value clears the named tag in incremental writers.
 }
 
 // splitTrack 拆分音轨号字符串为 (number, total)。
@@ -59,6 +59,9 @@ func splitTrack(s string) (number, total string) {
 // indicates that the requested fields or container layout require database
 // storage. Advanced writers validate a sibling file before atomic replacement.
 func WriteTag(filePath string, opts WriteOptions) error {
+	if opts.Incremental && !hasTagEdits(opts) {
+		return ErrUnsupportedWrite
+	}
 	f, err := os.Open(filePath)
 	if err != nil {
 		return err
@@ -89,7 +92,7 @@ func WriteTag(filePath string, opts WriteOptions) error {
 	case string(h[:4]) == "DSD ":
 		return writeDSF(filePath, opts)
 	case string(h[:4]) == "wvpk":
-		return writeWavPack(filePath, opts)
+		return writeAPEv2(filePath, WV, opts)
 	case string(h[:4]) == "RIFF" && string(h[8:12]) == "WAVE":
 		return WriteWAV(filePath, opts)
 	case isDTS(h), string(h[:4]) == "\x00\x00\x01\xba":
@@ -101,6 +104,9 @@ func WriteTag(filePath string, opts WriteOptions) error {
 		case "aac":
 			return writeADTS(filePath, opts)
 		case "flac":
+			if opts.Incremental {
+				return WriteFLAC(filePath, opts)
+			}
 			return WriteFLAC(filePath, withLegacyDisc(filePath, opts))
 		}
 	case string(h[:4]) == "\x1a\x45\xdf\xa3":
@@ -113,6 +119,12 @@ func WriteTag(filePath string, opts WriteOptions) error {
 		switch {
 		case string(h[:4]) == "fLaC":
 			return WriteFLAC(filePath, opts)
+		case string(h[:4]) == "OggS":
+			return WriteOGG(filePath, opts)
+		case string(h[:4]) == "MAC ":
+			return WriteAPE(filePath, opts)
+		case string(h[:4]) == "FORM" && (string(h[8:12]) == "AIFF" || string(h[8:12]) == "AIFC"):
+			return WriteAIFF(filePath, opts)
 		case string(h[:3]) == "ID3" || h[0] == 0xff && h[1]&0xe0 == 0xe0:
 			return writeMP3Incremental(filePath, opts)
 		default:

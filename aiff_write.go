@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 )
@@ -16,6 +17,9 @@ import (
 // Strategy: read existing file, preserve all audio/non-metadata chunks,
 // replace ID3/NAME/AUTH/ANNO chunks with new ones, write atomically.
 func WriteAIFF(filePath string, opts WriteOptions) error {
+	if opts.Incremental {
+		return writeAIFFIncremental(filePath, opts)
+	}
 	src, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("open aiff: %w", err)
@@ -115,6 +119,78 @@ func WriteAIFF(filePath string, opts WriteOptions) error {
 		return fmt.Errorf("rename: %w", err)
 	}
 	return nil
+}
+
+func writeAIFFIncremental(path string, opts WriteOptions) error {
+	return atomicRewrite(path, AIFF, func(src, dst *os.File, size int64) error {
+		header, err := readAt(src, 0, 12)
+		if err != nil {
+			return err
+		}
+		if int64(binary.BigEndian.Uint32(header[4:8])) != size-8 {
+			return unsupportedLayout("AIFF FORM size")
+		}
+		chunks, _, err := parseAIFFChunks(src)
+		if err != nil {
+			return err
+		}
+		if _, err := dst.Write(header); err != nil {
+			return err
+		}
+		edits := textEdits(opts)
+		native := map[string]string{"NAME": FieldTitle, "AUTH": FieldArtist}
+		var oldID3 []byte
+		end := int64(len(header))
+		for _, c := range chunks {
+			length := int64(c.size) + int64(c.size&1)
+			end = c.offset + length
+			if end > size {
+				return io.ErrUnexpectedEOF
+			}
+			if c.id == "ID3 " {
+				if oldID3 != nil || c.size == 0 {
+					return unsupportedLayout("multiple or empty AIFF ID3 chunks")
+				}
+				oldID3, err = readID3Block(src, c.offset, int64(c.size))
+				if err != nil {
+					return err
+				}
+				continue
+			}
+			if _, edited := edits[native[c.id]]; edited {
+				continue
+			}
+			if err := copySection(dst, src, c.offset-8, length+8); err != nil {
+				return err
+			}
+		}
+		if end != size {
+			return io.ErrUnexpectedEOF
+		}
+		for _, id := range []string{"NAME", "AUTH"} {
+			if value := edits[native[id]]; value != "" {
+				if err := writeAIFFTextChunk(dst, id, value); err != nil {
+					return err
+				}
+			}
+		}
+		id3, err := updateID3Block(oldID3, opts)
+		if err != nil {
+			return err
+		}
+		if err := writeAIFFRawChunk(dst, "ID3 ", id3); err != nil {
+			return err
+		}
+		position, err := dst.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return err
+		}
+		if position-8 > math.MaxUint32 {
+			return unsupportedLayout("AIFF FORM size limit")
+		}
+		_, err = dst.WriteAt(binary.BigEndian.AppendUint32(nil, uint32(position-8)), 4)
+		return err
+	})
 }
 
 type aiffChunk struct {

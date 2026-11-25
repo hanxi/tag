@@ -171,6 +171,13 @@ func updateID3Block(old []byte, opts WriteOptions) ([]byte, error) {
 	for _, f := range replacements {
 		changed[id3FrameKey(f)] = true
 	}
+	if opts.Incremental {
+		for name := range opts.CustomTags {
+			if name != "" {
+				changed["TXXX:"+strings.ToUpper(name)] = true
+			}
+		}
+	}
 	for _, field := range opts.ClearFields {
 		switch field {
 		case FieldYear:

@@ -112,6 +112,10 @@ func TestMediaContainerPacketRoundTrip(t *testing.T) {
 	}{
 		{"aac", "aac", "adts", AAC, true},
 		{"wv", "wavpack", "wv", WV, true},
+		{"ogg", "libvorbis", "ogg", OGG, true},
+		{"opus", "libopus", "opus", OGG, true},
+		{"aif", "pcm_s16be", "aiff", AIFF, true},
+		{"aifc", "pcm_s16le", "aiff", AIFF, true},
 		{"wav", "pcm_s16le", "wav", WAV, true},
 		{"mov", "aac", "mov", MOV, true},
 		{"mka", "flac", "matroska", MKA, true},
@@ -151,7 +155,7 @@ func TestMediaContainerPacketRoundTrip(t *testing.T) {
 			}
 			before, _ := independentPackets(t, ffprobe, input)
 			pic := &Picture{MIMEType: "image/png", Ext: "png", Data: pngHeader}
-			err = WriteTag(path, WriteOptions{Title: newTitle, Picture: pic})
+			err = WriteTag(path, WriteOptions{Incremental: true, Title: newTitle, Picture: pic})
 			if !tc.writable {
 				if !errors.Is(err, ErrUnsupportedWrite) {
 					t.Fatalf("raw stream write returned %v", err)
@@ -164,6 +168,18 @@ func TestMediaContainerPacketRoundTrip(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tc.kind == OGG {
+				lyrics := strings.Repeat("[00:01]A long lyric\n", 4000)
+				if err := WriteTag(path, WriteOptions{Incremental: true, Lyrics: lyrics}); err != nil {
+					t.Fatal(err)
+				}
+				if m := fileMetadata(t, path); m.Lyrics() != lyrics {
+					t.Fatalf("multi-page lyrics length = %d, want %d", len(m.Lyrics()), len(lyrics))
+				}
+				if err := WriteTag(path, WriteOptions{Incremental: true, Lyrics: "[00:01]Short"}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if m := fileMetadata(t, path); m.Title() != newTitle || tc.kind == WEBM && m.Picture() != nil {
 				t.Fatalf("rewritten metadata: title=%q, picture=%v", m.Title(), m.Picture() != nil)
@@ -179,7 +195,7 @@ func TestMediaContainerPacketRoundTrip(t *testing.T) {
 			if err := os.WriteFile(path, truncated, 0600); err != nil {
 				t.Fatal(err)
 			}
-			if err := WriteTag(path, WriteOptions{Title: newTitle}); err == nil {
+			if err := WriteTag(path, WriteOptions{Incremental: true, Title: newTitle}); err == nil {
 				t.Fatal("accepted a truncated source")
 			}
 			out, err := os.ReadFile(path)
